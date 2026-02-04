@@ -65,6 +65,8 @@ class ThermostatOverClimate(BaseThermostat[UnderlyingClimate]):
         self._last_regulation_change = None  # NowClass.get_now(hass)
         self._sync_entity_list: list[str] = []
         self._sync_with_calibration: bool = False
+        # HVAC mode mapping configuration
+        self._hvac_mode_mapping: dict[str, str] = {}
 
         # super.__init__ calls post_init at the end. So it must be called after regulation initialization
         super().__init__(hass, unique_id, name, entry_infos)
@@ -121,6 +123,20 @@ class ThermostatOverClimate(BaseThermostat[UnderlyingClimate]):
         self._auto_regulation_use_device_temp = config_entry.get(
             CONF_AUTO_REGULATION_USE_DEVICE_TEMP, False
         )
+
+        # Load HVAC mode mapping configuration
+        hvac_mode_mapping_heat = config_entry.get(CONF_HVAC_MODE_MAPPING_HEAT, HVAC_MODE_MAPPING_DEFAULT)
+
+        self._hvac_mode_mapping = {}
+        if hvac_mode_mapping_heat and hvac_mode_mapping_heat != HVAC_MODE_MAPPING_DEFAULT:
+            self._hvac_mode_mapping["heat"] = hvac_mode_mapping_heat
+
+        if self._hvac_mode_mapping:
+            _LOGGER.debug(
+                "%s - HVAC mode mapping configured: %s",
+                self,
+                self._hvac_mode_mapping,
+            )
 
     @property
     def is_over_climate(self) -> bool:
@@ -595,6 +611,7 @@ class ThermostatOverClimate(BaseThermostat[UnderlyingClimate]):
             "auto_deactivated_fan_mode": self._auto_deactivated_fan_mode,
             "follow_underlying_temp_change": self._follow_underlying_temp_change,
             "auto_regulation_use_device_temp": self.auto_regulation_use_device_temp,
+            "hvac_mode_mapping": self._hvac_mode_mapping if self._hvac_mode_mapping else None,
         }
 
         if self.is_regulated:
@@ -1263,10 +1280,15 @@ class ThermostatOverClimate(BaseThermostat[UnderlyingClimate]):
                 )
                 try:
                     under.startup()
+                    # Apply HVAC mode mapping to the underlying
+                    under.set_hvac_mode_mapping(self._hvac_mode_mapping)
                     changed = True
                 except UnknownEntity:
                     # still not found, we an stop here
                     return False
+            else:
+                # Ensure mapping is applied even if already initialized
+                under.set_hvac_mode_mapping(self._hvac_mode_mapping)
         self.choose_auto_fan_mode(self._auto_fan_mode)
 
         if changed:

@@ -185,6 +185,13 @@ STEP_THERMOSTAT_CLIMATE = vol.Schema(  # pylint: disable=invalid-name
             )
         ),
         vol.Optional(CONF_AUTO_REGULATION_USE_DEVICE_TEMP, default=False): cv.boolean,
+        vol.Optional(CONF_HVAC_MODE_MAPPING_HEAT, default=HVAC_MODE_MAPPING_DEFAULT): selector.SelectSelector(
+            selector.SelectSelectorConfig(
+                options=HVAC_MODE_MAPPING_OPTIONS,
+                translation_key="hvac_mode_mapping",
+                mode="dropdown",
+            )
+        ),
     }
 )
 

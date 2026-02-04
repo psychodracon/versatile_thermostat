@@ -111,6 +111,21 @@ CONF_AUTO_REGULATION_EXPERT = "auto_regulation_expert"
 CONF_AUTO_REGULATION_DTEMP = "auto_regulation_dtemp"
 CONF_AUTO_REGULATION_PERIOD_MIN = "auto_regulation_periode_min"
 CONF_AUTO_REGULATION_USE_DEVICE_TEMP = "auto_regulation_use_device_temp"
+
+# HVAC mode mapping
+CONF_HVAC_MODE_MAPPING_HEAT = "hvac_mode_mapping_heat"
+HVAC_MODE_MAPPING_DEFAULT = "default"
+HVAC_MODE_MAPPING_OPTIONS = [
+    HVAC_MODE_MAPPING_DEFAULT,
+    "heat",
+    "cool",
+    "auto",
+    "heat_cool",
+    "off",
+    "dry",
+    "fan_only",
+]
+
 CONF_INVERSE_SWITCH = "inverse_switch_command"
 CONF_AUTO_FAN_MODE = "auto_fan_mode"
 CONF_AUTO_FAN_NONE = "auto_fan_none"

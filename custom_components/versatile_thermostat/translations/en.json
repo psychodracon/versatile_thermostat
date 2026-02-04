@@ -112,7 +112,8 @@
           "on_command_text": "Turn on command customization",
           "vswitch_on_command": "Optional turn on commands",
           "off_command_text": "Turn off command customization",
-          "vswitch_off_command": "Optional turn off commands"
+          "vswitch_off_command": "Optional turn off commands",
+          "hvac_mode_mapping_heat": "Map 'heat' mode to"
         },
         "data_description": {
           "underlying_entity_ids": "The device(s) to be controlled - 1 is required",
@@ -126,7 +127,8 @@
           "auto_regulation_use_device_temp": "Use the eventual internal temperature sensor of the underlying to speedup the self-regulation (not needed in most cases)",
           "inverse_switch_command": "For switch with pilot wire and diode you may need to inverse the command",
           "auto_fan_mode": "Automatically activate fan when huge heating/cooling is necessary",
-          "on_command_text": "For underlying of type `select` or `climate` you have to customize the commands."
+          "on_command_text": "For underlying of type `select` or `climate` you have to customize the commands.",
+          "hvac_mode_mapping_heat": "When VTherm requests 'heat' mode, send this mode to the underlying climate. Use 'Default' to send 'heat' as-is."
         }
       },
       "tpi": {
@@ -488,7 +490,8 @@
           "on_command_text": "Turn on command customization",
           "vswitch_on_command": "Optional turn on commands",
           "off_command_text": "Turn off command customization",
-          "vswitch_off_command": "Optional turn off commands"
+          "vswitch_off_command": "Optional turn off commands",
+          "hvac_mode_mapping_heat": "Map 'heat' mode to"
         },
         "data_description": {
           "underlying_entity_ids": "The device(s) to be controlled - 1 is required",
@@ -502,7 +505,8 @@
           "auto_regulation_use_device_temp": "Use the eventual internal temperature sensor of the underlying to speedup the self-regulation (not needed in most cases)",
           "inverse_switch_command": "For switch with pilot wire and diode you may need to inverse the command",
           "auto_fan_mode": "Automatically activate fan when huge heating/cooling is necessary",
-          "on_command_text": "For underlying of type `select` or `climate` you have to customize the commands."
+          "on_command_text": "For underlying of type `select` or `climate` you have to customize the commands.",
+          "hvac_mode_mapping_heat": "When VTherm requests 'heat' mode, send this mode to the underlying climate. Use 'Default' to send 'heat' as-is."
         }
       },
       "tpi": {
@@ -823,6 +827,18 @@
       "options": {
         "discovery": "Discovery",
         "fine_tuning": "Fine Tuning"
+      }
+    },
+    "hvac_mode_mapping": {
+      "options": {
+        "default": "Default (no mapping)",
+        "heat": "Heat",
+        "cool": "Cool",
+        "auto": "Auto",
+        "heat_cool": "Heat/Cool",
+        "off": "Off",
+        "dry": "Dry",
+        "fan_only": "Fan only"
       }
     }
   },
