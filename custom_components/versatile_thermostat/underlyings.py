@@ -634,12 +634,63 @@ class UnderlyingClimate(UnderlyingEntity):
             entity_type=UnderlyingEntityType.CLIMATE,
             entity_id=climate_entity_id,
         )
+        self._hvac_mode_mapping: Dict[str, str] = {}
         self._last_sent_temperature: Optional[float] = None
         self._cancel_set_fan_mode_later: Optional[Callable[[], None]] = None
         self._cancel_set_temperature_later: Optional[Callable[[], None]] = None
         self._min_sync_entity: float = None
         self._max_sync_entity: float = None
         self._step_sync_entity: float = None
+
+    def set_hvac_mode_mapping(self, mapping: Dict[str, str]) -> None:
+        """Set the HVAC mode mapping from VTherm modes to underlying modes.
+
+        Args:
+            mapping: Dictionary mapping VTherm mode strings to underlying mode strings.
+                     e.g., {"heat": "auto", "cool": "cool"}
+        """
+        self._hvac_mode_mapping = mapping or {}
+        if self._hvac_mode_mapping:
+            _LOGGER.debug(
+                "%s - HVAC mode mapping set to: %s",
+                self,
+                self._hvac_mode_mapping,
+            )
+
+    def _apply_hvac_mode_mapping(self, hvac_mode: VThermHvacMode) -> VThermHvacMode:
+        """Apply the HVAC mode mapping to convert VTherm mode to underlying mode.
+
+        Args:
+            hvac_mode: The VTherm HVAC mode to convert.
+
+        Returns:
+            The mapped HVAC mode for the underlying climate entity.
+        """
+        if not self._hvac_mode_mapping:
+            return hvac_mode
+
+        mode_str = str(hvac_mode)
+        mapped_mode_str = self._hvac_mode_mapping.get(mode_str)
+
+        if mapped_mode_str and mapped_mode_str != HVAC_MODE_MAPPING_DEFAULT:
+            try:
+                mapped_mode = VThermHvacMode(mapped_mode_str)
+                _LOGGER.info(
+                    "%s - Mapping HVAC mode %s -> %s",
+                    self,
+                    hvac_mode,
+                    mapped_mode,
+                )
+                return mapped_mode
+            except ValueError:
+                _LOGGER.warning(
+                    "%s - Invalid mapped HVAC mode '%s', using original mode %s",
+                    self,
+                    mapped_mode_str,
+                    hvac_mode,
+                )
+
+        return hvac_mode
 
     async def set_hvac_mode(self, hvac_mode: VThermHvacMode) -> bool:
         """Set the HVACmode of the underlying climate. Returns true if something have change"""
@@ -648,7 +699,10 @@ class UnderlyingClimate(UnderlyingEntity):
         if state is None:
             return False
 
-        if state.state == to_ha_hvac_mode(hvac_mode) and self._hvac_mode == hvac_mode:
+        # Apply HVAC mode mapping before sending to underlying
+        mapped_hvac_mode = self._apply_hvac_mode_mapping(hvac_mode)
+
+        if state.state == to_ha_hvac_mode(mapped_hvac_mode) and self._hvac_mode == hvac_mode:
             _LOGGER.debug(
                 "%s - hvac_mode is already is requested state %s. Do not send any command",
                 self,
@@ -656,7 +710,7 @@ class UnderlyingClimate(UnderlyingEntity):
             )
             return False
 
-        # When turning on a climate, check that power is available
+        # When turning on a climate, check that power is available (use original mode for this check)
         if hvac_mode in (VThermHvacMode_HEAT, VThermHvacMode_COOL) and not await self.check_overpowering():
             return False
 
@@ -669,7 +723,14 @@ class UnderlyingClimate(UnderlyingEntity):
 
         await super().set_hvac_mode(hvac_mode)
 
-        data = {ATTR_ENTITY_ID: self._entity_id, "hvac_mode": to_legacy_ha_hvac_mode(hvac_mode)}
+        data = {ATTR_ENTITY_ID: self._entity_id, "hvac_mode": to_legacy_ha_hvac_mode(mapped_hvac_mode)}
+        _LOGGER.info(
+            "%s - Setting hvac_mode to %s%s",
+            self,
+            mapped_hvac_mode,
+            f" (mapped from {hvac_mode})" if mapped_hvac_mode != hvac_mode else "",
+        )
+
         await self.hass_services_async_call(
             CLIMATE_DOMAIN,
             SERVICE_SET_HVAC_MODE,
