@@ -8,7 +8,7 @@ import logging
 
 from datetime import datetime, timedelta
 
-from unittest.mock import patch, call
+from unittest.mock import patch, MagicMock, PropertyMock
 
 from homeassistant.const import STATE_ON, STATE_OFF
 from homeassistant.core import HomeAssistant
@@ -32,7 +32,7 @@ from custom_components.versatile_thermostat.thermostat_climate import (
     ThermostatOverClimate,
 )
 
-from custom_components.versatile_thermostat.vtherm_api import VersatileThermostatAPI
+from custom_components.versatile_thermostat.vtherm_central_api import VersatileThermostatAPI
 from custom_components.versatile_thermostat.binary_sensor import (
     CentralBoilerBinarySensor,
 )
@@ -44,8 +44,6 @@ from .const import *  # pylint: disable=wildcard-import, unused-wildcard-import
 
 _LOGGER = logging.getLogger(__name__)
 
-# @pytest.mark.parametrize("expected_lingering_tasks", [True])
-# @pytest.mark.parametrize("expected_lingering_timers", [True])
 async def test_add_a_central_config_with_boiler(
     hass: HomeAssistant,
     skip_hass_states_is_state,
@@ -86,17 +84,19 @@ async def test_add_a_central_config_with_boiler(
     assert central_boiler_manager.total_power_active_for_boiler == 0  # the default value is 0
     assert central_boiler_manager.total_power_active_for_boiler_threshold == 0  # the default value is 0
 
+
 async def test_update_central_boiler_state_simple(
     hass: HomeAssistant,
-    # skip_hass_states_is_state,
     init_central_config_with_boiler_fixture,
+    fake_underlying_switch,
 ):
+    switch1 = fake_underlying_switch
     """Test that the central boiler state behavior in a full normal conditions (with no mock)"""
 
     api = VersatileThermostatAPI.get_vtherm_api(hass)
 
-    switch1 = MockSwitch(hass, "switch1", "theSwitch1")
-    await register_mock_entity(hass, switch1, SWITCH_DOMAIN)
+    # switch1 = MockSwitch(hass, "switch1", "theSwitch1")
+    # await register_mock_entity(hass, switch1, SWITCH_DOMAIN)
 
     switch_pompe_chaudiere = MockSwitch(hass, "pompe_chaudiere", "SwitchPompeChaudiere")
     await register_mock_entity(hass, switch_pompe_chaudiere, SWITCH_DOMAIN)
@@ -147,14 +147,14 @@ async def test_update_central_boiler_state_simple(
     assert entity
     assert entity.name == "TheOverSwitchMockName"
     assert entity.is_over_switch
-    assert entity.underlying_entities[0].entity_id == "switch.switch1"
+    assert entity.underlying_entities[0].entity_id == "switch.mock_switch"
 
     api.central_boiler_manager._set_nb_active_device_threshold(1)
     api.central_boiler_manager._set_total_power_active_threshold(1000)
     await hass.async_block_till_done()
 
     assert api.central_boiler_manager.nb_active_device_for_boiler_threshold == 1
-    assert api.central_boiler_manager.nb_active_device_for_boiler == 0
+    await wait_for_local_condition(lambda: api.central_boiler_manager.nb_active_device_for_boiler == 0)
 
     assert api.central_boiler_manager.total_power_active_for_boiler_threshold == 1000
     assert api.central_boiler_manager.total_power_active_for_boiler == 0
@@ -247,6 +247,7 @@ async def test_update_central_boiler_state_simple(
     #
     _LOGGER.debug("---- 1. Turn on the switch1")
     now = now + timedelta(minutes=1)
+    await entity.cycle_scheduler.cancel_cycle()
     await send_temperature_change_event(entity, 10, now)
 
     await wait_for_local_condition(lambda: entity.hvac_action == HVACAction.HEATING)
@@ -256,15 +257,17 @@ async def test_update_central_boiler_state_simple(
     assert switch_pompe_chaudiere.is_on
 
     # There should be one device active
-    assert api.central_boiler_manager.nb_active_device_for_boiler == 1
+    assert entity.is_initialized is True
+    await wait_for_local_condition(lambda: api.central_boiler_manager.nb_active_device_for_boiler == 1)
+
     # boiler binary sensor is on
     assert boiler_binary_sensor.state == STATE_ON
 
     assert nb_device_active_sensor.state == 1
-    assert nb_device_active_sensor.active_device_ids == ["switch.switch1"]
+    assert nb_device_active_sensor.active_device_ids == ["switch.mock_switch"]
 
     assert total_power_active_sensor.state == 1500
-    assert total_power_active_sensor.active_device_ids == ["switch.switch1"]
+    assert total_power_active_sensor.active_device_ids == ["switch.mock_switch"]
 
     # check custom attributes of boiler binary sensor
     assert boiler_binary_sensor.extra_state_attributes["central_boiler_state"] == STATE_ON
@@ -683,24 +686,29 @@ async def test_update_central_boiler_state_multiple(
     await asyncio.sleep(0.5)
 
     assert entity.hvac_action == HVACAction.HEATING
-    assert api.central_boiler_manager.nb_active_device_for_boiler == 1
-    assert boiler_binary_sensor.state == STATE_ON  # On by total power > threshold
+    # Circular offsets: cycle=300s, 4 underlyings, step=75s
+    # on_percent=0.5, on_time=150s. Offsets: [0, 75, 150, 225]
+    # Under 0 (switch1): on_t=0,   off_t=150 → ON in [0,150)     → ON at t=0
+    # Under 1 (switch2): on_t=75,  off_t=225 → ON in [75,225)    → OFF at t=0
+    # Under 2 (switch3): on_t=150, off_t=0   → ON in [150,300)   → OFF at t=0
+    # Under 3 (switch4): on_t=225, off_t=75  → ON wraps [225,300)∪[0,75) → ON at t=0
+    assert api.central_boiler_manager.nb_active_device_for_boiler == 2
 
-    # A cycle has began with switch1 only
-    assert nb_device_active_sensor.state == 1
-    assert nb_device_active_sensor.active_device_ids == ["switch.switch1"]
+    # At t=0: switch1 (offset 0) and switch4 (wrap-around) are ON
+    assert nb_device_active_sensor.state == 2
+    assert nb_device_active_sensor.active_device_ids == ["switch.switch1", "switch.switch4"]
 
     # on_percent is 50
     assert entity.power_percent == 50
     assert total_power_active_sensor.state == 750
     assert total_power_active_sensor.active_device_ids == ["switch.switch1", "switch.switch2", "switch.switch3", "switch.switch4"]
-    assert api.central_boiler_manager.is_nb_active_active_for_boiler_exceeded is False
+    assert api.central_boiler_manager.is_nb_active_active_for_boiler_exceeded is True
     assert api.central_boiler_manager.is_total_power_active_for_boiler_exceeded is True
 
     # check custom attributes of boiler binary sensor
     assert boiler_binary_sensor.extra_state_attributes["central_boiler_state"] == STATE_ON
     assert boiler_binary_sensor.extra_state_attributes["central_boiler_manager"]["is_on"] is True
-    assert boiler_binary_sensor.extra_state_attributes["central_boiler_manager"]["nb_active_device_for_boiler"] == 1
+    assert boiler_binary_sensor.extra_state_attributes["central_boiler_manager"]["nb_active_device_for_boiler"] == 2
     assert boiler_binary_sensor.extra_state_attributes["central_boiler_manager"]["total_power_active_for_boiler"] == 750
 
     entity.remove_thermostat()
@@ -793,18 +801,15 @@ async def test_update_central_boiler_state_simple_valve(
 
     # 1. start a valve
     await send_temperature_change_event(entity, 10, now)
-    # Wait for state event propagation
-    await asyncio.sleep(0.5)
+    await wait_for_local_condition(lambda: entity.hvac_action == HVACAction.HEATING, 10)
+    await wait_for_local_condition(lambda: entity.device_actives == ["number.valve1"], 10)
+    await wait_for_local_condition(lambda: api.central_boiler_manager.nb_active_device_for_boiler == 1, 10)
+    await wait_for_local_condition(lambda: boiler_binary_sensor.state == STATE_ON, 10)
+    await wait_for_local_condition(lambda: nb_device_active_sensor.state == 1, 10)
+    await wait_for_local_condition(lambda: total_power_active_sensor.state == 1500, 10)
 
-    assert entity.hvac_action == HVACAction.HEATING
     assert entity.device_actives == ["number.valve1"]
-
-    assert api.central_boiler_manager.nb_active_device_for_boiler == 1
-    assert boiler_binary_sensor.state == STATE_ON
-
-    assert nb_device_active_sensor.state == 1
     assert nb_device_active_sensor.active_device_ids == ["number.valve1"]
-    assert total_power_active_sensor.state == 1500
     assert total_power_active_sensor.active_device_ids == ["number.valve1"]
 
     # 2. stop a heater
@@ -812,19 +817,14 @@ async def test_update_central_boiler_state_simple_valve(
     # Change the valve value to 0
     valve1.set_native_value(0)
     valve1.async_write_ha_state()
-    # Wait for state event propagation
-    await asyncio.sleep(0.5)
+    await wait_for_local_condition(lambda: entity.hvac_action == HVACAction.IDLE, 10)
+    await wait_for_local_condition(lambda: entity.device_actives == [], 10)
+    await wait_for_local_condition(lambda: api.central_boiler_manager.nb_active_device_for_boiler == 0, 10)
+    await wait_for_local_condition(lambda: boiler_binary_sensor.state == STATE_OFF, 10)
+    await wait_for_local_condition(lambda: nb_device_active_sensor.state == 0, 10)
+    await wait_for_local_condition(lambda: total_power_active_sensor.state == 0, 10)
 
-    assert entity.hvac_action == HVACAction.IDLE
-    assert entity.device_actives == []
-
-    assert api.central_boiler_manager.nb_active_device_for_boiler == 0
-    assert boiler_binary_sensor.state == STATE_OFF
-
-    assert nb_device_active_sensor.state == 0
     assert nb_device_active_sensor.active_device_ids == []
-
-    assert total_power_active_sensor.state == 0
     assert total_power_active_sensor.active_device_ids == []
 
     entity.remove_thermostat()
@@ -876,15 +876,11 @@ async def test_update_central_boiler_state_simple_climate(
         },
     )
 
-    with patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingClimate.find_underlying_climate",
-        return_value=climate1,
-    ):
-        entity: ThermostatOverClimate = await create_thermostat(hass, entry, "climate.theoverclimatemockname", temps=default_temperatures)
-        assert entity
-        assert entity.name == "TheOverClimateMockName"
-        assert entity.is_over_climate
-        assert entity.underlying_entities[0].entity_id == "climate.climate1"
+    entity: ThermostatOverClimate = await create_thermostat(hass, entry, "climate.theoverclimatemockname", temps=default_temperatures)
+    assert entity
+    assert entity.name == "TheOverClimateMockName"
+    assert entity.is_over_climate
+    assert entity.underlying_entities[0].entity_id == "climate.climate1"
 
     api.central_boiler_manager._set_nb_active_device_threshold(1)
     assert api.central_boiler_manager.nb_active_device_for_boiler_threshold == 1
@@ -1012,15 +1008,11 @@ async def test_update_central_boiler_state_simple_climate_power(
         },
     )
 
-    with patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingClimate.find_underlying_climate",
-        return_value=climate1,
-    ):
-        entity: ThermostatOverClimate = await create_thermostat(hass, entry, "climate.theoverclimatemockname", temps=default_temperatures)
-        assert entity
-        assert entity.name == "TheOverClimateMockName"
-        assert entity.is_over_climate
-        assert entity.underlying_entities[0].entity_id == "climate.climate1"
+    entity: ThermostatOverClimate = await create_thermostat(hass, entry, "climate.theoverclimatemockname", temps=default_temperatures)
+    assert entity
+    assert entity.name == "TheOverClimateMockName"
+    assert entity.is_over_climate
+    assert entity.underlying_entities[0].entity_id == "climate.climate1"
 
     api.central_boiler_manager._set_nb_active_device_threshold(0)
     api.central_boiler_manager._set_total_power_active_threshold(1000)
@@ -1106,17 +1098,11 @@ async def test_update_central_boiler_state_simple_climate_power(
 
 # @pytest.mark.skip(reason="This test don't work when execute in // of other tests. It should be run alone")
 async def test_update_central_boiler_state_simple_climate_valve_regulation(
-    hass: HomeAssistant,
-    # skip_hass_states_is_state,
-    # skip_hass_states_get,
-    init_central_config_with_boiler_fixture,
+    hass: HomeAssistant, init_central_config_with_boiler_fixture, fake_underlying_climate, fake_temp_sensor, fake_ext_temp_sensor
 ):
     """Test that the central boiler state behavior with a climate with valve regulation"""
 
     api = VersatileThermostatAPI.get_vtherm_api(hass)
-
-    climate1 = MockClimate(hass, "climate1", "theClimate1", hvac_mode=VThermHvacMode_OFF)
-    await register_mock_entity(hass, climate1, CLIMATE_DOMAIN)
 
     switch_pompe_chaudiere = MockSwitch(hass, "pompe_chaudiere", "SwitchPompeChaudiere")
     await register_mock_entity(hass, switch_pompe_chaudiere, SWITCH_DOMAIN)
@@ -1138,7 +1124,7 @@ async def test_update_central_boiler_state_simple_climate_valve_regulation(
             CONF_USE_MOTION_FEATURE: False,
             CONF_USE_POWER_FEATURE: True,
             CONF_USE_PRESENCE_FEATURE: False,
-            CONF_UNDERLYING_LIST: [climate1.entity_id],
+            CONF_UNDERLYING_LIST: ["climate.mock_climate"],
             CONF_OPENING_DEGREE_LIST: ["number.mock_opening_degree"],
             CONF_CLOSING_DEGREE_LIST: [],
             CONF_OFFSET_CALIBRATION_LIST: [],
@@ -1164,186 +1150,115 @@ async def test_update_central_boiler_state_simple_climate_valve_regulation(
         },
     )
 
-    open_degree_entity = MockNumber(hass, "mock_opening_degree", "Opening degree")
-    await register_mock_entity(hass, open_degree_entity, NUMBER_DOMAIN)
-    open_degree_entity.set_native_value(0)
+    fake_opening_degree = await create_and_register_mock_number(hass, "mock_opening_degree", "MockOpeningDegree", value=0, min=0, max=100)
     await hass.async_block_till_done()
 
-    # mock_get_state will be called for each OPENING/CLOSING/OFFSET_CALIBRATION list
-    mock_get_state_side_effect = SideEffects(
-        {
-            open_degree_entity.entity_id: State(
-                open_degree_entity.entity_id,
-                open_degree_entity.state,
-                {"min": 0, "max": 100},
-            ),
-            "number.mock_closing_degree": State(
-                "number.mock_closing_degree", "0", {"min": 0, "max": 100}
-            ),
-            "number.mock_offset_calibration": State(
-                "number.mock_offset_calibration", "0", {"min": -12, "max": 12}
-            ),
-        },
-        State("unknown.entity_id", "unknown"),
-    )
+    entity: ThermostatOverClimate = await create_thermostat(hass, entry, "climate.theoverclimatemockname", temps=default_temperatures)
+    assert entity
+    assert entity.name == "TheOverClimateMockName"
+    assert entity.is_over_climate
+    assert entity.underlying_entities[0].entity_id == "climate.mock_climate"
 
-    with patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingClimate.find_underlying_climate",
-        return_value=climate1,
-    ), patch(
-        "homeassistant.core.StateMachine.get",
-        side_effect=mock_get_state_side_effect.get_side_effects(),
-    ):
-        entity: ThermostatOverClimate = await create_thermostat(hass, entry, "climate.theoverclimatemockname", temps=default_temperatures)
-        assert entity
-        assert entity.name == "TheOverClimateMockName"
-        assert entity.is_over_climate
-        assert entity.underlying_entities[0].entity_id == "climate.climate1"
+    # Boiler will be started only if 2 devices are active or more than 1000W (1 valve)
+    api.central_boiler_manager._set_nb_active_device_threshold(2)
+    api.central_boiler_manager._set_total_power_active_threshold(1000)
+    assert api.central_boiler_manager.nb_active_device_for_boiler_threshold == 2
+    assert api.central_boiler_manager.total_power_active_for_boiler_threshold == 1000
 
-        # Boiler will be started only if 2 devices are active or more than 1000W (1 valve)
-        api.central_boiler_manager._set_nb_active_device_threshold(2)
-        api.central_boiler_manager._set_total_power_active_threshold(1000)
-        assert api.central_boiler_manager.nb_active_device_for_boiler_threshold == 2
-        assert api.central_boiler_manager.total_power_active_for_boiler_threshold == 1000
+    assert (nb_device_active_sensor := search_entity(hass, "sensor.nb_device_active_for_boiler", "sensor")) is not None
+    assert (total_power_active_sensor := search_entity(hass, "sensor.total_power_active_for_boiler", "sensor")) is not None
 
-        assert (nb_device_active_sensor := search_entity(hass, "sensor.nb_device_active_for_boiler", "sensor")) is not None
-        assert (total_power_active_sensor := search_entity(hass, "sensor.total_power_active_for_boiler", "sensor")) is not None
+    assert nb_device_active_sensor.state == 0
+    assert nb_device_active_sensor.active_device_ids == []
+    assert total_power_active_sensor.state == 0
+    assert total_power_active_sensor.active_device_ids == []
 
-        assert nb_device_active_sensor.state == 0
-        assert nb_device_active_sensor.active_device_ids == []
-        assert total_power_active_sensor.state == 0
-        assert total_power_active_sensor.active_device_ids == []
+    # Force the VTherm to heat
+    tz = get_tz(hass)  # pylint: disable=invalid-name
+    now: datetime = datetime.now(tz=tz)
+    entity._set_now(now)
 
-        # Force the VTherm to heat
-        tz = get_tz(hass)  # pylint: disable=invalid-name
-        now: datetime = datetime.now(tz=tz)
-        entity._set_now(now)
+    fake_temp_sensor.set_native_value(30)
+    fake_ext_temp_sensor.set_native_value(18)
+    # await send_temperature_change_event(entity, 30, now)
+    # await send_ext_temperature_change_event(entity, 18, now)
+    await hass.async_block_till_done()
 
-        await send_temperature_change_event(entity, 30, now)
-        await send_ext_temperature_change_event(entity, 18, now)
-        await hass.async_block_till_done()
+    await entity.async_set_hvac_mode(VThermHvacMode_HEAT)
+    await entity.async_set_preset_mode(VThermPreset.BOOST)
 
-        await entity.async_set_hvac_mode(VThermHvacMode_HEAT)
-        await entity.async_set_preset_mode(VThermPreset.BOOST)
+    # the VTherm should not heat now
+    assert entity.hvac_mode == VThermHvacMode_HEAT
+    # a valve at 0 is considered as OFF
+    await wait_for_local_condition(lambda: entity.hvac_action == HVACAction.OFF, 10)
+    assert entity.activable_underlying_entities[0]._percent_open == 0
+    await wait_for_local_condition(lambda: entity.device_actives == [])
 
-        # the VTherm should not heat now
-        assert entity.hvac_mode == VThermHvacMode_HEAT
-        assert entity.hvac_action == HVACAction.OFF
-        assert entity.activable_underlying_entities[0]._percent_open == 0
-        assert entity.device_actives == []
-
-        boiler_binary_sensor: CentralBoilerBinarySensor = search_entity(
-            hass, "binary_sensor.central_configuration_central_boiler", "binary_sensor"
-        )
-        assert boiler_binary_sensor is not None
-        assert boiler_binary_sensor.state == STATE_OFF
+    boiler_binary_sensor: CentralBoilerBinarySensor = search_entity(hass, "binary_sensor.central_configuration_central_boiler", "binary_sensor")
+    assert boiler_binary_sensor is not None
+    assert boiler_binary_sensor.state == STATE_OFF
 
     # 1. start a climate with not 100% open degree
-    open_degree_entity.set_native_value(100)
-    mock_get_state_side_effect = SideEffects(
-        {
-            open_degree_entity.entity_id: State(
-                open_degree_entity.entity_id,
-                open_degree_entity.state,
-                {"min": 0, "max": 100},
-            ),
-            "number.mock_closing_degree": State(
-                "number.mock_closing_degree", "0", {"min": 0, "max": 100}
-            ),
-            "number.mock_offset_calibration": State(
-                "number.mock_offset_calibration", "0", {"min": -12, "max": 12}
-            ),
-        },
-        State("unknown.entity_id", "unknown"),
-    )
+    fake_opening_degree.set_native_value(100)
 
-    # fmt: off
-    with patch("homeassistant.core.StateMachine.get",side_effect=mock_get_state_side_effect.get_side_effects()):
-    # fmt: on
-        now = now + timedelta(minutes=1)
-        entity._set_now(now)
+    now = now + timedelta(minutes=1)
+    entity._set_now(now)
 
-        # in Boost setpoint is 21°C
-        await send_temperature_change_event(entity, 19.5, now)
-        # we have to simulate the climate also else the test don't work
-        climate1.set_hvac_mode(VThermHvacMode_HEAT)
-        climate1.set_hvac_action(HVACAction.HEATING)
-        climate1.async_write_ha_state()
-        # Wait for state event propagation
-        await hass.async_block_till_done()
-        await asyncio.sleep(0.5)
+    # in Boost setpoint is 21°C
+    fake_temp_sensor.set_native_value(19.5)
+    await hass.async_block_till_done()
+    # await send_temperature_change_event(entity, 19.5, now)
 
-        assert entity.hvac_action == HVACAction.HEATING
-        assert entity.device_actives == ["number.mock_opening_degree"]
+    # we have to simulate the climate also else the test don't work
+    fake_underlying_climate.set_hvac_mode(VThermHvacMode_HEAT)
+    fake_underlying_climate.set_hvac_action(HVACAction.HEATING)
+    await hass.async_block_till_done()
+    await wait_for_local_condition(lambda: entity.hvac_action == HVACAction.HEATING, 10)
+    await wait_for_local_condition(lambda: entity.device_actives == ["number.mock_opening_degree"], 10)
+    await wait_for_local_condition(lambda: nb_device_active_sensor.state == 1, 10)
+    await wait_for_local_condition(lambda: total_power_active_sensor.state == 1125, 10)
+    await wait_for_local_condition(lambda: api.central_boiler_manager.nb_active_device_for_boiler == 1, 10)
+    await wait_for_local_condition(lambda: boiler_binary_sensor.state == STATE_ON, 10)
 
-        assert nb_device_active_sensor.state == 1
-        assert nb_device_active_sensor.active_device_ids == [
-            "number.mock_opening_degree",
-        ]
+    assert nb_device_active_sensor.active_device_ids == [
+        "number.mock_opening_degree",
+    ]
 
-        assert entity.on_percent == 0.75 # (21-19.5)*0.3 + (21-18)*0.1 = 0.75
-        assert total_power_active_sensor.state == 1125 # on_percent is 75% x 1500W = 1125W
-        assert total_power_active_sensor.active_device_ids == [
-            "number.mock_opening_degree",
-        ]
+    assert entity.on_percent == 0.75  # (21-19.5)*0.3 + (21-18)*0.1 = 0.75
+    assert total_power_active_sensor.active_device_ids == [
+        "number.mock_opening_degree",
+    ]
 
-        assert api.central_boiler_manager.is_nb_active_active_for_boiler_exceeded is False
-        assert api.central_boiler_manager.is_total_power_active_for_boiler_exceeded is True
-
-        assert api.central_boiler_manager.nb_active_device_for_boiler == 1
-        assert boiler_binary_sensor.state == STATE_ON
-
-
+    assert api.central_boiler_manager.is_nb_active_active_for_boiler_exceeded is False
+    assert api.central_boiler_manager.is_total_power_active_for_boiler_exceeded is True
 
     # 2. stop a climate
-    mock_get_state_side_effect = SideEffects(
-        {
-            open_degree_entity.entity_id: State(
-                open_degree_entity.entity_id,
-                open_degree_entity.state,
-                {"min": 0, "max": 100},
-            ),
-            "number.mock_closing_degree": State(
-                "number.mock_closing_degree", "0", {"min": 0, "max": 100}
-            ),
-            "number.mock_offset_calibration": State(
-                "number.mock_offset_calibration", "0", {"min": -12, "max": 12}
-            ),
-        },
-        State("unknown.entity_id", "unknown"),
-    )
 
-    # fmt: off
-    with patch("homeassistant.core.StateMachine.get",side_effect=mock_get_state_side_effect.get_side_effects()):
-    # fmt: on
+    # await send_temperature_change_event(entity, 25, now)
+    fake_temp_sensor.set_native_value(25)
+    await hass.async_block_till_done()
 
-        await send_temperature_change_event(entity, 25, now)
-        climate1.set_hvac_mode(VThermHvacMode_HEAT)
-        climate1.set_hvac_action(HVACAction.IDLE)
-        climate1.async_write_ha_state()
-        # Wait for state event propagation
-        await asyncio.sleep(0.5)
+    fake_underlying_climate.set_hvac_mode(VThermHvacMode_HEAT)
+    fake_underlying_climate.set_hvac_action(HVACAction.IDLE)
 
-        # The underlying is idle but the valve are closed -> OFF
-        assert entity.hvac_action == HVACAction.OFF
-        assert entity.device_actives == []
+    # Wait for state event propagation
+    await hass.async_block_till_done()
 
-        assert api.central_boiler_manager.nb_active_device_for_boiler == 0
-        assert boiler_binary_sensor.state == STATE_OFF
-
-        assert nb_device_active_sensor.state == 0
-        assert nb_device_active_sensor.active_device_ids == []
-
-        assert total_power_active_sensor.state == 0
-        assert total_power_active_sensor.active_device_ids == []
+    # The underlying is idle but the valve are closed -> OFF
+    await wait_for_local_condition(lambda: entity.hvac_action == HVACAction.OFF, 10)
+    await wait_for_local_condition(lambda: api.central_boiler_manager.nb_active_device_for_boiler == 0, 10)
+    await wait_for_local_condition(lambda: boiler_binary_sensor.state == STATE_OFF, 10)
+    await wait_for_local_condition(lambda: nb_device_active_sensor.state == 0, 10)
+    await wait_for_local_condition(lambda: total_power_active_sensor.state == 0, 10)
+    assert entity.device_actives == []
+    assert nb_device_active_sensor.active_device_ids == []
+    assert total_power_active_sensor.active_device_ids == []
 
     entity.remove_thermostat()
 
 
-# @pytest.mark.skip(reason="This test don't work when execute in // of other tests. It should be run alone")
 async def test_bug_339(
     hass: HomeAssistant,
-    # skip_hass_states_is_state,
     init_central_config_with_boiler_fixture,
 ):
     """Test that the counter of active Vtherm in central boiler is
@@ -1352,10 +1267,10 @@ async def test_bug_339(
 
     api = VersatileThermostatAPI.get_vtherm_api(hass)
 
-    climate1 = MockClimate(
-        hass=hass,
-        unique_id="climate1",
-        name="theClimate1",
+    climate1 = await create_and_register_mock_climate(
+        hass,
+        "climate1",
+        "theClimate1",
         hvac_mode=VThermHvacMode_AUTO,
         hvac_modes=[VThermHvacMode_AUTO, VThermHvacMode_OFF, VThermHvacMode_HEAT, VThermHvacMode_COOL],
         hvac_action=HVACAction.HEATING,
@@ -1394,19 +1309,13 @@ async def test_bug_339(
         },
     )
 
-    with patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingClimate.find_underlying_climate",
-        return_value=climate1,
-    ):
-        entity: ThermostatOverValve = await create_thermostat(
-            hass, entry, "climate.theoverclimatemockname"
-        )
-        assert entity
-        assert entity.name == "TheOverClimateMockName"
-        assert entity.is_over_climate
-        assert entity.underlying_entities[0].entity_id == "climate.climate1"
-        api.central_boiler_manager._set_nb_active_device_threshold(1)
-        assert api.central_boiler_manager.nb_active_device_for_boiler_threshold == 1
+    entity: ThermostatOverValve = await create_thermostat(hass, entry, "climate.theoverclimatemockname")
+    assert entity
+    assert entity.name == "TheOverClimateMockName"
+    assert entity.is_over_climate
+    assert entity.underlying_entities[0].entity_id == "climate.climate1"
+    api.central_boiler_manager._set_nb_active_device_threshold(1)
+    assert api.central_boiler_manager.nb_active_device_for_boiler_threshold == 1
 
     assert (nb_device_active_sensor := search_entity(hass, "sensor.nb_device_active_for_boiler", "sensor")) is not None
 
@@ -1421,3 +1330,334 @@ async def test_bug_339(
     assert api.central_boiler_manager.is_nb_active_active_for_boiler_exceeded is True
 
     entity.remove_thermostat()
+
+
+async def test_central_boiler_cancel_delayed_activation(hass: HomeAssistant):
+    """Test that call_service is NOT called when _activate_later finds the condition is no longer met.
+
+    This test:
+    1. Triggers activation scheduling (conditions TRUE) which captures the _activate_later callback
+    2. Changes conditions to FALSE
+    3. Calls the _activate_later callback directly
+    4. Verifies that call_service was NOT called and the cancellation log appears
+    """
+    from custom_components.versatile_thermostat.feature_central_boiler_manager import FeatureCentralBoilerManager
+
+    api_mock = MagicMock()
+    manager = FeatureCentralBoilerManager(hass, api_mock)
+    manager._name = "TestCentralBoilerManager"
+
+    # Mock the central boiler entity to avoid AttributeError in send_vtherm_event
+    boiler_entity_mock = MagicMock()
+    boiler_entity_mock.entity_id = "binary_sensor.central_boiler"
+    manager._central_boiler_entity = boiler_entity_mock
+
+    entry_infos = {
+        CONF_CENTRAL_BOILER_ACTIVATION_SRV: "switch.boiler/switch.turn_on",
+        CONF_CENTRAL_BOILER_DEACTIVATION_SRV: "switch.boiler/switch.turn_off",
+        CONF_CENTRAL_BOILER_ACTIVATION_DELAY_SEC: 1,
+    }
+    manager.post_init(entry_infos)
+
+    manager.call_service = MagicMock(return_value=None)
+    manager._is_ready = True
+    manager._is_on = False
+
+    # Capture the _activate_later callback from async_call_later
+    captured_callback: Callable = None
+
+    def mock_async_call_later(hass_arg, delay, callback):
+        nonlocal captured_callback
+        captured_callback = callback
+        return MagicMock()  # Return a handle
+
+    # STEP 1: Trigger activation scheduling - condition is TRUE
+    with patch.object(type(manager), "is_nb_active_active_for_boiler_exceeded", new_callable=PropertyMock, return_value=True):
+        with patch.object(type(manager), "is_total_power_active_for_boiler_exceeded", new_callable=PropertyMock, return_value=False):
+            with patch("custom_components.versatile_thermostat.feature_central_boiler_manager.async_call_later", side_effect=mock_async_call_later):
+                await manager.calculate_central_boiler_state(None)
+
+    # Verify the callback was captured
+    assert captured_callback is not None, "async_call_later was not called - callback not captured"
+
+    # STEP 2: Now conditions are FALSE - call the real _activate_later callback
+    with patch.object(type(manager), "is_nb_active_active_for_boiler_exceeded", new_callable=PropertyMock, return_value=False):
+        with patch.object(type(manager), "is_total_power_active_for_boiler_exceeded", new_callable=PropertyMock, return_value=False):
+            with patch("custom_components.versatile_thermostat.feature_central_boiler_manager._LOGGER.info") as mock_info:
+                # Call the REAL _activate_later function
+                await captured_callback(None)  # pylint: disable=not-callable
+
+                # Verify the cancellation log was called
+                mock_info.assert_called()
+                call_args = str(mock_info.call_args_list[0])
+                assert "central boiler delayed activation cancelled because condition is not valid anymore" in call_args
+
+                # Verify that call_service was NOT called (this is the key assertion)
+                manager.call_service.assert_not_called()
+
+                # Verify boiler is still off
+                assert manager._is_on is False
+
+
+@pytest.mark.parametrize("expected_lingering_tasks", [True])
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_central_boiler_excludes_offline_climate(
+    hass: HomeAssistant,
+    init_central_config_with_boiler_fixture,
+):
+    """Test that an offline climate entity is NOT counted as active for boiler decisions.
+    Issue #1890 - When a climate entity goes unavailable, is_device_active should return
+    None instead of True, so it is excluded from the active device count.
+
+    Steps:
+    1. Create a VTherm with a climate underlying, used by central boiler
+    2. Start heating - verify boiler turns on
+    3. Set climate to unavailable - verify boiler turns off
+    4. Set climate back online and heating - verify boiler turns on again
+    """
+
+    api = VersatileThermostatAPI.get_vtherm_api(hass)
+
+    climate1 = MockClimate(hass, "climate1", "theClimate1")
+    await register_mock_entity(hass, climate1, CLIMATE_DOMAIN)
+
+    switch_pompe_chaudiere = MockSwitch(hass, "pompe_chaudiere", "SwitchPompeChaudiere")
+    await register_mock_entity(hass, switch_pompe_chaudiere, SWITCH_DOMAIN)
+    assert switch_pompe_chaudiere.is_on is False
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="TheOverClimateMockName",
+        unique_id="uniqueId",
+        data={
+            CONF_NAME: "TheOverClimateMockName",
+            CONF_THERMOSTAT_TYPE: CONF_THERMOSTAT_CLIMATE,
+            CONF_TEMP_SENSOR: "sensor.mock_temp_sensor",
+            CONF_EXTERNAL_TEMP_SENSOR: "sensor.mock_ext_temp_sensor",
+            CONF_CYCLE_MIN: 5,
+            CONF_TEMP_MIN: 8,
+            CONF_TEMP_MAX: 18,
+            CONF_USE_WINDOW_FEATURE: False,
+            CONF_USE_MOTION_FEATURE: False,
+            CONF_USE_POWER_FEATURE: False,
+            CONF_USE_PRESENCE_FEATURE: False,
+            CONF_UNDERLYING_LIST: [climate1.entity_id],
+            CONF_MINIMAL_ACTIVATION_DELAY: 30,
+            CONF_MINIMAL_DEACTIVATION_DELAY: 0,
+            CONF_SAFETY_DELAY_MIN: 5,
+            CONF_SAFETY_MIN_ON_PERCENT: 0.3,
+            CONF_SAFETY_DEFAULT_ON_PERCENT: 0.1,
+            CONF_USE_MAIN_CENTRAL_CONFIG: True,
+            CONF_USE_PRESETS_CENTRAL_CONFIG: False,
+            CONF_USE_ADVANCED_CENTRAL_CONFIG: True,
+            CONF_USED_BY_CENTRAL_BOILER: True,
+        },
+    )
+
+    entity: ThermostatOverClimate = await create_thermostat(hass, entry, "climate.theoverclimatemockname", temps=default_temperatures)
+    assert entity
+
+    api.central_boiler_manager._set_nb_active_device_threshold(1)
+
+    nb_device_active_sensor = search_entity(hass, "sensor.nb_device_active_for_boiler", "sensor")
+    assert nb_device_active_sensor is not None
+
+    boiler_binary_sensor: CentralBoilerBinarySensor = search_entity(
+        hass, "binary_sensor.central_configuration_central_boiler", "binary_sensor"
+    )
+    assert boiler_binary_sensor is not None
+
+    tz = get_tz(hass)
+    now: datetime = datetime.now(tz=tz)
+
+    await send_temperature_change_event(entity, 10, now)
+    await entity.async_set_hvac_mode(VThermHvacMode_HEAT)
+    await entity.async_set_preset_mode(VThermPreset.COMFORT)
+
+    # 1. Climate is heating - boiler should be ON
+    climate1.set_hvac_mode(VThermHvacMode_HEAT)
+    climate1.set_hvac_action(HVACAction.HEATING)
+    climate1.async_write_ha_state()
+    await asyncio.sleep(0.5)
+
+    assert entity.device_actives == ["climate.climate1"]
+    assert api.central_boiler_manager.nb_active_device_for_boiler == 1
+    assert boiler_binary_sensor.state == STATE_ON
+
+    # 2. Climate goes OFFLINE - boiler should turn OFF
+    climate1.set_hvac_mode(STATE_UNAVAILABLE)
+    climate1.async_write_ha_state()
+    await asyncio.sleep(0.5)
+
+    assert entity.device_actives == []
+    assert api.central_boiler_manager.nb_active_device_for_boiler == 0
+    assert boiler_binary_sensor.state == STATE_OFF
+
+    # 3. Climate comes back online and heating - boiler should turn ON again
+    climate1.set_hvac_mode(VThermHvacMode_HEAT)
+    climate1.set_hvac_action(HVACAction.HEATING)
+    climate1.async_write_ha_state()
+    await asyncio.sleep(0.5)
+
+    assert entity.device_actives == ["climate.climate1"]
+    assert api.central_boiler_manager.nb_active_device_for_boiler == 1
+    assert boiler_binary_sensor.state == STATE_ON
+
+    entity.remove_thermostat()
+
+
+async def test_central_boiler_keep_alive_disabled(hass: HomeAssistant):
+    """Test that keep-alive is not activated when delay is 0"""
+    from custom_components.versatile_thermostat.feature_central_boiler_manager import FeatureCentralBoilerManager
+
+    api_mock = MagicMock()
+    manager = FeatureCentralBoilerManager(hass, api_mock)
+    manager._name = "TestCentralBoilerManager"
+
+    # Mock the central boiler entity
+    boiler_entity_mock = MagicMock()
+    boiler_entity_mock.entity_id = "binary_sensor.central_boiler"
+    manager._central_boiler_entity = boiler_entity_mock
+
+    entry_infos = {
+        CONF_CENTRAL_BOILER_ACTIVATION_SRV: "switch.boiler/switch.turn_on",
+        CONF_CENTRAL_BOILER_DEACTIVATION_SRV: "switch.boiler/switch.turn_off",
+        CONF_CENTRAL_BOILER_ACTIVATION_DELAY_SEC: 0,
+        CONF_KEEP_ALIVE_BOILER_DELAY_SEC: 0,  # Keep-alive disabled
+    }
+    manager.post_init(entry_infos)
+
+    assert manager._keep_alive_boiler_delay_sec == 0
+    assert manager._time_interval_listener_cancel is None
+
+
+async def test_central_boiler_keep_alive_enabled(hass: HomeAssistant):
+    """Test that keep-alive works with configured delay"""
+    from custom_components.versatile_thermostat.feature_central_boiler_manager import FeatureCentralBoilerManager
+
+    api_mock = MagicMock()
+    manager = FeatureCentralBoilerManager(hass, api_mock)
+    manager._name = "TestCentralBoilerManager"
+
+    # Mock the central boiler entity
+    boiler_entity_mock = MagicMock()
+    boiler_entity_mock.entity_id = "binary_sensor.central_boiler"
+    manager._central_boiler_entity = boiler_entity_mock
+
+    entry_infos = {
+        CONF_CENTRAL_BOILER_ACTIVATION_SRV: "switch.boiler/switch.turn_on",
+        CONF_CENTRAL_BOILER_DEACTIVATION_SRV: "switch.boiler/switch.turn_off",
+        CONF_CENTRAL_BOILER_ACTIVATION_DELAY_SEC: 0,
+        CONF_KEEP_ALIVE_BOILER_DELAY_SEC: 60,  # Keep-alive enabled with 60 seconds delay
+    }
+    manager.post_init(entry_infos)
+
+    assert manager._keep_alive_boiler_delay_sec == 60
+    assert manager._last_activated_service is None
+
+    # Start listening to set up the keep-alive interval listener
+    captured_listener_cancel = None
+
+    def mock_async_track_time_interval(hass_arg, callback, interval):
+        nonlocal captured_listener_cancel
+        captured_listener_cancel = MagicMock(return_value=None)
+        return captured_listener_cancel
+
+    manager.call_service = MagicMock(return_value=None)
+    manager._is_ready = True
+    manager._is_on = False
+
+    with patch("custom_components.versatile_thermostat.feature_central_boiler_manager.async_track_time_interval", side_effect=mock_async_track_time_interval):
+        with patch("custom_components.versatile_thermostat.feature_central_boiler_manager.async_track_state_change_event", return_value=MagicMock()):
+            await manager.start_listening()
+
+    # Verify that the time interval listener was registered
+    assert captured_listener_cancel is not None
+
+
+async def test_central_boiler_keep_alive_resends_command(hass: HomeAssistant):
+    """Test that keep-alive resends the last command periodically"""
+    from custom_components.versatile_thermostat.feature_central_boiler_manager import FeatureCentralBoilerManager
+    from unittest.mock import AsyncMock
+
+    api_mock = MagicMock()
+    manager = FeatureCentralBoilerManager(hass, api_mock)
+    manager._name = "TestCentralBoilerManager"
+
+    # Mock the central boiler entity
+    boiler_entity_mock = MagicMock()
+    boiler_entity_mock.entity_id = "binary_sensor.central_boiler"
+    manager._central_boiler_entity = boiler_entity_mock
+
+    entry_infos = {
+        CONF_CENTRAL_BOILER_ACTIVATION_SRV: "switch.boiler/switch.turn_on",
+        CONF_CENTRAL_BOILER_DEACTIVATION_SRV: "switch.boiler/switch.turn_off",
+        CONF_CENTRAL_BOILER_ACTIVATION_DELAY_SEC: 0,
+        CONF_KEEP_ALIVE_BOILER_DELAY_SEC: 60,
+    }
+    manager.post_init(entry_infos)
+
+    # Mock call_service as an async mock
+    manager.call_service = AsyncMock()
+    manager._is_ready = True
+    manager._is_on = True
+
+    # Set up a last activated service (simulating a previous activation)
+    manager._last_activated_service = {
+        "service_domain": "switch",
+        "service_name": "turn_on",
+        "entity_id": "switch.boiler",
+        "data": {},
+    }
+
+    # No delayed activation pending
+    manager._call_later_handle = None
+
+    # Call the keep-alive function
+    await manager._keep_alive_boiler(None)
+
+    # Verify that call_service was called with the last service
+    manager.call_service.assert_called_once_with(manager._last_activated_service)
+
+
+async def test_central_boiler_keep_alive_respects_delayed_activation(hass: HomeAssistant):
+    """Test that keep-alive does not trigger during delayed activation"""
+    from custom_components.versatile_thermostat.feature_central_boiler_manager import FeatureCentralBoilerManager
+
+    api_mock = MagicMock()
+    manager = FeatureCentralBoilerManager(hass, api_mock)
+    manager._name = "TestCentralBoilerManager"
+
+    # Mock the central boiler entity
+    boiler_entity_mock = MagicMock()
+    boiler_entity_mock.entity_id = "binary_sensor.central_boiler"
+    manager._central_boiler_entity = boiler_entity_mock
+
+    entry_infos = {
+        CONF_CENTRAL_BOILER_ACTIVATION_SRV: "switch.boiler/switch.turn_on",
+        CONF_CENTRAL_BOILER_DEACTIVATION_SRV: "switch.boiler/switch.turn_off",
+        CONF_CENTRAL_BOILER_ACTIVATION_DELAY_SEC: 10,
+        CONF_KEEP_ALIVE_BOILER_DELAY_SEC: 60,
+    }
+    manager.post_init(entry_infos)
+
+    manager.call_service = MagicMock(return_value=None)
+    manager._is_ready = True
+    manager._is_on = False
+
+    # Set up a last activated service
+    manager._last_activated_service = {
+        "service_domain": "switch",
+        "service_name": "turn_on",
+        "entity_id": "switch.boiler",
+        "data": {},
+    }
+
+    # Simulate a delayed activation pending
+    manager._call_later_handle = MagicMock()
+
+    # Call the keep-alive function
+    await manager._keep_alive_boiler(None)
+
+    # Verify that call_service was NOT called (due to pending delayed activation)
+    manager.call_service.assert_not_called()

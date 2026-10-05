@@ -2,6 +2,36 @@
 
 ![Nouveau](images/new-icon.png)
 
+
+## Release 8.6
+> 1. ajout du paramètre `max_opening_degrees` pour les VTherms de type `over_climate_valve` permettant de limiter le pourcentage d'ouverture maximal de chaque vanne afin de contrôler le débit d'eau chaude et optimiser la consommation d'énergie (ou autre cas d'usage).
+> 2. ajout de la fonction de recalibrage des vannes d'un _VTherm_ `over_climate_valve` permettant de forcer une ouverture maximale puis une fermeture maximale pour tenter de recalibrer un _TRV_. Plus d'informations [ici](documentation/fr/feature-recalibrate-valves.md).
+
+## Release 8.5
+> 1. ajout de la détection d'anomalie de chauffe pour les VTherms utilisant l'algorithme TPI. Cette fonction détecte deux types d'anomalies :
+>    - **anomalie de chauffage** : le radiateur chauffe fortement (on_percent élevé) mais la température n'augmente pas,
+>    - **anomalie de refroidissement** : le radiateur ne chauffe pas (on_percent à 0) mais la température continue d'augmenter.
+>
+> Ces anomalies peuvent indiquer une fenêtre ouverte, un radiateur défaillant ou une source de chaleur externe. La fonctionnalité envoie des événements qui peuvent être utilisés pour déclencher des automatisations (notifications, alertes, etc.). Plus d'informations [ici](documentation/fr/feature-heating-failure-detection.md).
+
+## Release 8.4
+> 1. ajout de l'auto TPI (expérimental). Cette nouvelle fonction permet de calculer automatiquement les meilleurs coefficients pour l'algorithme du TPI. Plus d'informations [ici](documentation/fr/feature-autotpi.md)
+> 2. ajout d'une fonction de synchronisation des températures d'un équipement piloté en mode `over_climate`. Suivant, les fonctionnalités de votre équipement, _VTherm_ peut contrôler une entité de calibrage de l'offset ou directement une entité de température externe. Plus d'informations [ici](documentation/fr/feature-sync_device_temp.md)
+> 3. ajout d'une fonction nommée preset temporisé permettant de sélectionner un preset pendant un temps donné et revenir au précédent une fois le délai expiré. La fonction est décrite [ici](documentation/fr/feature-timed-preset.md).
+
+## Release 8.3
+> 1. ajout d'un délai configurable avant l'activation de la chaudière centrale,
+> 2. ajout d'un déclenchement de la chaudière centrale si le total de la puissance activée dépasse un seuil. Pour faire marcher cette fonction il faut :
+> - configurer le seuil de puissance qui va déclencher la chaudière. C'est une nouvelle entité qui est disponible dans l'appareil 'configuration centrale',
+> - configurez les puissances des Vtherms. Ca se trouve dans la première page de configuration des VTherms,
+> - cochez la case `Utilisé par la chaudière centrale`.
+>
+> A chaque fois que le VTherm sera activé, sa puissance configurée viendra s'ajoutée et si le seuil est dépassé, la chaudière centrale sera activée après le délai configuré en 1.
+>
+> L'ancien compteur du nombres de devices activés et son seuil existent toujours. Pour désactiver l'un des seuils (le seuil de puissance ou le seuil du nombre de devices activés), il faut le mettre à zéro. Dès que l'un des 2 seuils différents de zéro est dépassé, la chaudière est activée. C'est donc un "ou logique" entre les 2 seuils qui est appliqué.
+>
+> Plus d'informations [ici](documentation/fr/feature-central-boiler.md).
+
 ## Release 8.2
 - Ajout d'une fonction permettant de verrouiller / déverouiller un _VTherm_ avec potentiellement un code. Plus d'informations [ici](documentation/fr/feature-lock.md)
 

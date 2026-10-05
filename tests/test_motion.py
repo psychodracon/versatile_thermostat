@@ -213,9 +213,7 @@ async def test_motion_feature_manager_event(
 
 @pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_motion_management_time_not_enough(
-    hass: HomeAssistant, skip_hass_states_is_state
-):
+async def test_motion_management_time_not_enough(hass: HomeAssistant, skip_hass_states_is_state, fake_underlying_switch: MockSwitch):
     """Test the Presence management when time is not enough"""
     temps = {
         "frost": 10,
@@ -351,6 +349,9 @@ async def test_motion_management_time_not_enough(
         assert entity.motion_state == STATE_ON
         assert entity.presence_state == STATE_ON
 
+        # With CycleScheduler, turn_on is called immediately when the cycle starts
+        assert mock_heater_on.call_count == 1
+
     # stop detecting motion with off delay too low
     with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
@@ -380,8 +381,8 @@ async def test_motion_management_time_not_enough(
         assert entity.presence_state == STATE_ON
 
         assert mock_send_event.call_count == 0
-        # The heater must heat now
-        assert mock_heater_on.call_count == 1
+        # The heater is still heating (cycle started in previous block), no new turn_on needed
+        assert mock_heater_on.call_count == 0
         assert mock_heater_off.call_count == 0
         assert mock_send_event.call_count == 0
 
@@ -419,9 +420,7 @@ async def test_motion_management_time_not_enough(
 
 @pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_motion_management_time_enough_and_presence(
-    hass: HomeAssistant, skip_hass_states_is_state
-):
+async def test_motion_management_time_enough_and_presence(hass: HomeAssistant, skip_hass_states_is_state, fake_underlying_switch: MockSwitch):
     """Test the Motion management when time is not enough"""
 
     entry = MockConfigEntry(
@@ -545,9 +544,7 @@ async def test_motion_management_time_enough_and_presence(
 
 @pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_motion_management_time_enough_and_not_presence(
-    hass: HomeAssistant, skip_hass_states_is_state
-):
+async def test_motion_management_time_enough_and_not_presence(hass: HomeAssistant, skip_hass_states_is_state, fake_underlying_switch: MockSwitch):
     """Test the Presence management when time is not enough"""
 
     entry = MockConfigEntry(
@@ -663,8 +660,8 @@ async def test_motion_management_time_enough_and_not_presence(
         assert entity.motion_state == STATE_OFF
         assert entity.presence_state == STATE_OFF
         assert mock_send_event.call_count == 0
-        # 18.1 starts heating with a low on_percent
-        assert mock_heater_on.call_count == 1
+        # 18.1 starts heating with a low on_percent, device already ON so no redundant turn_on
+        assert mock_heater_on.call_count == 0
         assert entity.proportional_algorithm.on_percent == 0.11
         assert mock_heater_off.call_count == 0
         assert mock_send_event.call_count == 0
@@ -672,9 +669,7 @@ async def test_motion_management_time_enough_and_not_presence(
 
 @pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_motion_management_with_stop_during_condition(
-    hass: HomeAssistant, skip_hass_states_is_state
-):
+async def test_motion_management_with_stop_during_condition(hass: HomeAssistant, skip_hass_states_is_state, fake_underlying_switch: MockSwitch):
     """Test the Motion management when the movement sensor switch to off and then to on during the test condition"""
 
     entry = MockConfigEntry(
@@ -806,9 +801,7 @@ async def test_motion_management_with_stop_during_condition(
 
 @pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_motion_management_with_stop_during_condition_last_state_on(
-    hass: HomeAssistant, skip_hass_states_is_state
-):
+async def test_motion_management_with_stop_during_condition_last_state_on(hass: HomeAssistant, skip_hass_states_is_state, fake_underlying_switch: MockSwitch):
     """Test the Motion management when the movement sensor switch to off and then to on during the test condition"""
 
     entry = MockConfigEntry(

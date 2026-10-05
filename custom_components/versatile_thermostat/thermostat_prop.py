@@ -1,8 +1,8 @@
 # pylint: disable=line-too-long, abstract-method
 """Base class for proportional thermostats (TPI, SmartPI)."""
-
 import logging
-from typing import Generic, Any
+from vtherm_api.log_collector import get_vtherm_logger
+from typing import Generic
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
@@ -10,18 +10,18 @@ from homeassistant.exceptions import ServiceValidationError
 from .base_thermostat import BaseThermostat, ConfigData
 from .underlyings import T
 from .vtherm_hvac_mode import VThermHvacMode_OFF
-from .const import CONF_PROP_FUNCTION
+from .const import CONF_PROP_FUNCTION, PROPORTIONAL_FUNCTION_TPI
 
-_LOGGER = logging.getLogger(__name__)
+_LOGGER = get_vtherm_logger(__name__)
 
 
 class ThermostatProp(BaseThermostat[T], Generic[T]):
     """Base class for proportional thermostats.
-    
+
     This class provides the common infrastructure for proportional
     control algorithms (TPI, SmartPI). Algorithm-specific logic is
     delegated to a handler via composition.
-    
+
     Note: TPI-specific attributes (_tpi_coef_int, _proportional_function, etc.)
     are inherited from BaseThermostat and updated by the handler during init.
     """
@@ -30,6 +30,10 @@ class ThermostatProp(BaseThermostat[T], Generic[T]):
         """Initialize the proportional thermostat."""
         # Handler for algorithm-specific logic (TPI or SmartPI)
         self._algo_handler = None
+        self._on_time_sec: float | None = 0
+        self._off_time_sec: float | None = 0
+        self._safety_state: bool = False
+        self._safety_default_on_percent: float = 0.0
 
         super().__init__(hass, unique_id, name, entry_infos)
 
@@ -43,21 +47,86 @@ class ThermostatProp(BaseThermostat[T], Generic[T]):
         return True
 
     @property
+    def prop_algorithm(self):
+        """Get the proportional algorithm."""
+        return self._prop_algorithm
+
+    @prop_algorithm.setter
+    def prop_algorithm(self, value):
+        """Set the proportional algorithm."""
+        self._prop_algorithm = value
+
+    @property
     def proportional_algorithm(self):
-        """Get the ProportionalAlgorithm."""
+        """Get the proportional algorithm (alias)."""
         return self._prop_algorithm
 
     @property
+    def on_percent(self) -> float | None:
+        """Returns the percentage the heater must be ON
+        In safety mode this value is overridden with the _default_on_percent.
+        Returns None when the temperature sensor was not available at the last
+        calculation. Callers must treat None as "temperature unknown — keep
+        the current switch state unchanged".
+        """
+        if self._safety_state:
+            val = self._safety_default_on_percent
+        elif self._prop_algorithm:
+            val = self._prop_algorithm.on_percent
+            if val is None:
+                # Temperature was not available at last calculation.
+                # Propagate None so callers can skip touching the switch.
+                return None
+        else:
+            val = 0
+
+        # Clamp with max_on_percent
+        # issue 538 - clamping with max_on_percent should be done here
+        if self._max_on_percent is not None and val > self._max_on_percent:
+            val = self._max_on_percent
+
+        # Notify the algorithm of the realized power (if supported)
+        # Only if the value has been modified by safety or clamping
+        if self._prop_algorithm and hasattr(self._prop_algorithm, "update_realized_power"):
+            # Get what the algorithm proposes
+            algo_percent = self._prop_algorithm.on_percent
+            if algo_percent is not None and val != algo_percent:
+                self._prop_algorithm.update_realized_power(val)
+
+        return val
+
+    @property
     def safe_on_percent(self) -> float:
-        """Return the on_percent safe value."""
-        if self._prop_algorithm and self._prop_algorithm.on_percent:
-            return self._prop_algorithm.on_percent
-        return 0
+        """Return the on_percent safe value.
+        Deprecated: use on_percent directly as it now handles safety.
+        """
+        return self.on_percent
+
+    def set_safety(self, default_on_percent: float):
+        """Set a default value for on_percent (used for safety mode)"""
+        _LOGGER.info("%s - Set safety to ON with default_on_percent=%s", self, default_on_percent)
+        self._safety_state = True
+        self._safety_default_on_percent = default_on_percent
+
+    def unset_safety(self):
+        """Unset the safety mode"""
+        _LOGGER.info("%s - Set safety to OFF", self)
+        self._safety_state = False
 
     @property
     def auto_tpi_manager(self):
         """Return the Auto TPI manager from handler."""
         return self._algo_handler.auto_tpi_manager if self._algo_handler else None
+
+    @property
+    def on_time_sec(self) -> float | None:
+        """Return the on time in seconds"""
+        return self._on_time_sec
+
+    @property
+    def off_time_sec(self) -> float | None:
+        """Return the off time in seconds"""
+        return self._off_time_sec
 
     # =========================================================================
     # LIFECYCLE METHODS - Delegate to handler
@@ -67,22 +136,56 @@ class ThermostatProp(BaseThermostat[T], Generic[T]):
         """Finish the initialization of the thermostat."""
         super().post_init(config_entry)
 
+        # Initialize off_time to full cycle duration (on_percent=0 at startup)
+        self._off_time_sec = int(self._cycle_min * 60)
+
         # Initialize the proportional function from config
         # This allows selecting the correct handler (TPI, or other prop algorithms)
         self._proportional_function = self._entry_infos.get(CONF_PROP_FUNCTION)
 
-        self._init_algorithm_handler()
+        # For external algorithms, don't raise if not registered yet — will retry at startup.
+        self._init_algorithm_handler(
+            raise_if_missing=(self._proportional_function == PROPORTIONAL_FUNCTION_TPI)
+        )
 
-    def _init_algorithm_handler(self):
+    def _init_algorithm_handler(self, raise_if_missing: bool = True) -> bool:
         """Initialize the algorithm handler based on proportional_function config.
-        
-        This method creates the appropriate handler (TPI or other future ones) based on
-        the CONF_PROP_FUNCTION setting in the configuration.
+
+        Returns True if the handler was successfully initialized, False if the external
+        algorithm was not yet registered (only possible when raise_if_missing=False).
         """
         # Import here to avoid circular imports
         from .prop_handler_tpi import TPIHandler  # pylint: disable=import-outside-toplevel
-        self._algo_handler = TPIHandler(self)
-        self._algo_handler.init_algorithm()
+        from .vtherm_central_api import VersatileThermostatAPI  # pylint: disable=import-outside-toplevel
+
+        if self._proportional_function == PROPORTIONAL_FUNCTION_TPI:
+            self._algo_handler = TPIHandler(self)
+            self._algo_handler.init_algorithm()
+            return True
+
+        api = VersatileThermostatAPI.get_vtherm_api(self.hass)
+        factory = (
+            api.get_prop_algorithm(self._proportional_function)
+            if api is not None and hasattr(api, "get_prop_algorithm")
+            else None
+        )
+
+        if factory is not None:
+            self._algo_handler = factory.create(self)
+            self._algo_handler.init_algorithm()
+            return True
+
+        if raise_if_missing:
+            raise ValueError(
+                f"{self} - Unknown proportional function: {self._proportional_function}"
+            )
+
+        _LOGGER.warning(
+            "%s - External proportional algorithm '%s' not yet registered. Will retry at startup.",
+            self,
+            self._proportional_function,
+        )
+        return False
 
     async def async_added_to_hass(self):
         """Run when entity about to be added."""
@@ -92,6 +195,17 @@ class ThermostatProp(BaseThermostat[T], Generic[T]):
 
     async def async_startup(self, central_configuration):
         """Startup the thermostat."""
+        # External algorithm plugins register after VT entities are created.
+        # async_startup is called after EVENT_HOMEASSISTANT_STARTED so all plugins
+        # are guaranteed to be loaded at this point.
+        if self._algo_handler is None:
+            if not self._init_algorithm_handler(raise_if_missing=True):
+                return
+            if self._cycle_scheduler is not None:
+                self._algo_handler.on_scheduler_ready(self._cycle_scheduler)
+            # Catch up on the lifecycle call that was skipped at entity creation.
+            await self._algo_handler.async_added_to_hass()
+
         await super().async_startup(central_configuration)
         if self._algo_handler:
             await self._algo_handler.async_startup()
@@ -115,24 +229,28 @@ class ThermostatProp(BaseThermostat[T], Generic[T]):
                 self._cur_ext_temp,
                 self.last_temperature_slope,
                 self.vtherm_hvac_mode or VThermHvacMode_OFF,
+                power_shedding=self.is_overpowering_detected,
+                off_reason=self.hvac_off_reason,
             )
 
-    async def _control_heating_specific(self, force=False):
+    async def _control_heating_specific(self, timestamp=None, force=False):
         """Control heating using the algorithm handler."""
         if self._algo_handler:
-            await self._algo_handler.control_heating(force)
+            await self._algo_handler.control_heating(timestamp, force)
 
     async def update_states(self, force=False):
         """Update states and delegate to handler."""
         changed = await super().update_states(force)
-        if changed and self._algo_handler:
-            await self._algo_handler.on_state_changed()
+        if self._algo_handler:
+            # External proportional plugins may need to react to temperature
+            # crossings even when VT logical state did not change.
+            await self._algo_handler.on_state_changed(changed)
         return changed
 
     def update_custom_attributes(self):
         """Update custom attributes."""
         super().update_custom_attributes()
-        if self._algo_handler:
+        if self._algo_handler and hasattr(self._algo_handler, "update_attributes"):
             self._algo_handler.update_attributes()
 
     # =========================================================================
@@ -212,15 +330,15 @@ class ThermostatProp(BaseThermostat[T], Generic[T]):
                 allow_kint_boost=allow_kint_boost,
                 allow_kext_overshoot=allow_kext_overshoot,
             )
-    async def _on_prop_cycle_start(self, params: dict[str, Any]):
-        """Called by Algorithm Handler when a new cycle starts.
-        
-        Args:
-            params: Dictionary containing cycle parameters (on_time, off_time, etc.)
+
+    def _bind_scheduler(self, scheduler) -> None:
+        """Store the CycleScheduler and notify the algo handler.
+
+        Called by concrete subclasses (ThermostatOverSwitch, etc.) immediately
+        after CycleScheduler construction. The handler registers whatever
+        callbacks it needs via on_scheduler_ready() — the thermostat does not
+        need to know the details.
         """
-        await self._fire_cycle_start_callbacks(
-            params.get("on_time_sec", 0),
-            params.get("off_time_sec", 0),
-            params.get("on_percent", 0),
-            params.get("hvac_mode", "stop")
-        )
+        self._cycle_scheduler = scheduler
+        if self._algo_handler:
+            self._algo_handler.on_scheduler_ready(scheduler)

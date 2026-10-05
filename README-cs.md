@@ -13,9 +13,14 @@ jazycích: [Angličtina](README.md) | [Francouzština](README-fr.md) | [Němčin
 <img src="https://github.com/jmcollin78/versatile_thermostat/blob/main/images/icon.png" />
 </p>
 
-> ![Tip](images/tips.png) Tato termostatická integrace má za cíl výrazně zjednodušit vaše automatizace kolem správy vytápění. Protože všechny typické události kolem vytápění (nikdo doma?, detekována aktivita v místnosti?, otevřené okno?, omezení spotřeby energie?) jsou nativně spravovány termostatem, nemusíte se zabývat komplikovanými skripty a automatizacemi pro správu vašich termostatů. ;-).
+> ![Tip](images/tips.png) **Versatile Thermostat** je vysoce konfigurovatelný virtuální termostat, který transformuje jakékoli vytápěcí zařízení (radiátory, klimatizace, tepelná čerpadla atd.) v inteligentní a adaptivní systém. Umožňuje vám konsolidovat a centrálně řídit více různých topných systémů, přičemž automaticky optimalizuje spotřebu energie. Díky pokročilým algoritmům (TPI, auto-TPI) a možnostem učení se termostat přizpůsobuje vašemu domu 🏠 a vašim zvykům, poskytuje optimální pohodlí a významné snížení vašich topných účtů 💰.
+> Tato termostatická integrace má za cíl výrazně zjednodušit vaše automatizace kolem správy vytápění. Protože všechny typické události kolem vytápění (nikdo doma?, detekována aktivita v místnosti?, otevřené okno?, omezení spotřeby energie?) jsou nativně spravovány termostatem, nemusíte se zabývat komplikovanými skripty a automatizacemi pro správu vašich termostatů. 😉
 
 Tato vlastní komponenta pro Home Assistant je vylepšením a kompletním přepsáním komponenty "Awesome thermostat" (viz [Github](https://github.com/dadge/awesome_thermostat)) s přidanými funkcemi.
+
+# Dokumentace
+
+Celá dokumentace je k dispozici na [Versatile Thermostat Web site](https://www.versatile-thermostat.org/).
 
 # Snímky obrazovky
 
@@ -26,32 +31,27 @@ Versatile Thermostat UI Card (K dispozici na [Github](https://github.com/jmcolli
 # Co je nového?
 ![Nové](images/new-icon.png)
 
-## Release 8.6
-> 1. přidán parametr `max_opening_degrees` pro VTherms typu `over_climate_valve` umožňující omezit maximální procento otevření každého ventilu pro řízení průtoku horké vody a optimalizaci spotřeby energie.
-> 2. přidána funkce překalibrace ventilů pro _VTherm_ `over_climate_valve`, která umožňuje vynutit maximální otevření a poté maximální zavření za účelem pokusu o překalibraci TRV. Více informací [zde](documentation/cs/feature-recalibrate-valves.md).
+## Release 10.0
+Zavedení mechanismu pluginů. To umožňuje používat externí integrace jako pluginy pro _VTherm_. Seznam dostupných pluginů je k dispozici na [Versatile Thermostat Web site](https://www.versatile-thermostat.org/cs/plugins).
 
-## Release 8.5
-> 1. přidána detekce poruchy vytápění pro VTherms používající algoritmus TPI. Tato funkce detekuje dva typy anomálií:
->    - **porucha vytápění**: radiátor silně topí (vysoké on_percent), ale teplota nestoupá,
->    - **porucha chlazení**: radiátor netopí (on_percent na 0), ale teplota stále stoupá.
->
-> Tyto anomálie mohou naznačovat otevřené okno, vadný radiátor nebo externí zdroj tepla. Funkce odesílá události, které lze použít ke spuštění automatizací (oznámení, výstrahy atd.). Více informací [zde](documentation/cs/feature-heating-failure-detection.md).
+## Release 9.3 - stabilní verze
+> 1. **Detekce zaseknutého ventilu**: Zásadní vylepšení detekce poruchy vytápění. Když je na termostatech typu `over_climate_valve` detekována anomálie, termostat nyní diagnostikuje, zda je problém způsoben zaseknutým ventilem TRV (zaseknutý otevřený nebo zavřený) porovnáním požadovaného stavu se skutečným stavem. Tyto informace - `root_cause` - jsou odeslány vEvents anomálie, což vám umožňuje podniknout příslušná opatření (oznámení, obnovení ventilu atd.). Další informace [zde](documentation/cs/feature-heating-failure-detection.md),
+> 2. **Automatické znovuzamčení po odemčení**: Přidán parametr `auto_relock_sec` do funkce zámku. Pokud je nakonfigurován, termostat se automaticky znovuzamkne po zadaném počtu sekund po odemčení. Tuto funkci můžete zcela deaktivovat nastavením na 0. Ve výchozím nastavení je automatické znovuzamčení nastaveno na 30 sekund pro zvýšení bezpečnosti. Další informace [zde](documentation/cs/feature-lock.md),
+> 3. **Opětovné odeslání příkazu**: Nová funkce pro automatickou detekci a opravu nesrovnalostí mezi požadovaným stavem termostatu a skutečným stavem podřízených zařízení. Pokud příkaz není správně aplikován na zařízení, je znovu odeslán. To zlepšuje spolehlivost systému v nestabilních prostředích nebo s nespolehlivým vybavením. Další informace [zde](documentation/cs/feature-advanced.md),
+> 4. **Obnovení časového přednastavení po restartování**: Nakonfigurované časové přednastavení je nyní správně obnoveno po restartování termostatu nebo Home Assistant. Toto přednastavení continue normálně funguje po restartování. Další informace [zde](documentation/cs/feature-timed-preset.md),
+> 5. **Zvýšená přesnost řízení výkonu**: Prah aktivace kotle (`power_activation_threshold`) nyní přijímá desetinné hodnoty (0,1, 0,5 atd.) pro jemnější kontrolu aktivačního výkonu. To poskytuje větší flexibilitu pro optimalizaci spotřeby energie. Další informace [zde](documentation/cs/feature-power.md),
+> 6. **Zlepšení dostupnosti senzorů**: Lepší podpora pro určení dostupnosti senzoru teploty pomocí metadat `last_updated` Home Assistant, zlepšená detekce ztráty signálu senzoru,
 
-## Release 8.4
-> 1. added auto TPI (experimental). This new feature allows automatically calculating the best coefficients for the TPI algorithm. More information [zde](documentation/cs/feature-autotpi.md)
-> 2. added a temperature synchronization function for a device controlled in `over_climate` mode. Depending on your device's capabilities, _VTherm_ can control an offset calibration entity or directly an external temperature entity. More information [zde](documentation/cs/feature-sync_device_temp.md),
-> 3. added a feature named "timed preset" which aims to select a preset for a certain duration and come back to the previous preset after the expiration of the delay. The new feature is totally described [zde](documentation/cs/feature-timed-preset.md).
+## Release 9.2
+> 1. Nový způsob řízení cyklů topení/zastavení pro VTherm `over_switch`. Současný algoritmus má časový drift a první cykly nejsou optimální. To narušuje TPI a zejména auto-TPI. Nový `Cycle Scheduler` řeší tyto potíže. Tato změna je pro vás zcela transparentní,
+> 2. Kolektor záznamů. Vaše žádosti o podporu často selhávají kvůli vaší schopnosti poskytnout záznamy v správném období, zaměřené na termostat s chybou a na správné úrovni záznamů. Jedná se zejména o obtížně reprodukovatelné chyby. Kolektor záznamů má za cíl vyřešit tuto potíž. Sbírá pro vás záznamy na pozadí na nejjemnější úrovni a akce (dříve služba) umožňuje jejich extrakci do souboru. Poté je můžete stáhnout a připojit k vaší žádosti o podporu. Analyzátor záznamů spojený s webovými stránkami – spuštěný ve verzi 9.1 (viz níže) – se přizpůsobuje, aby mohl tyto záznamy zpracovat. Více informací o kolektoru záznamů [zde](documentation/cs/feature-logs-collector.md),
+> 3. Stabilizace verze 9.x. Hlavní verze 9 přinesla mnoho změn, které způsobily některé anomálie. Tato verze přináší poslední opravy týkající se verze 9.
 
-## Release 8.3
-1. Addition of a configurable delay before activating the central boiler.
-2. Addition of a trigger for the central boiler when the total activated power exceeds a threshold. To make this feature work you must:
-   - Configure the power threshold that will trigger the boiler. This is a new entity available in the `central configuration` device.
-   - Configure the power values of the VTherms. This can be found on the first configuration page of each VTherm.
-   - Check the `Used by central boiler` box.
-
-Each time a VTherm is activated, its configured power is added to the total and, if the threshold is exceeded, the central boiler will be activated after the delay configured in item 1.
-
-The previous counter for the number of activated devices and its threshold still exist. To disable one of the thresholds (the power threshold or the activated-devices count threshold), set it to zero. As soon as either of the two non-zero thresholds is exceeded, the boiler is activated. Therefore a logical "or" is applied between the two thresholds.
+## Release 9.1
+> 1. Nové logo. Inspirováno prací @Krzysztonek (viz [zde](https://github.com/jmcollin78/versatile_thermostat/pull/1598)), VTherm využívá novou funkci představenou v [HA 206.03](https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api/) pro změnu svého loga. Celý tým doufá, že se vám bude líbit. Užijte si to!
+> 2. Webová stránka vytvořená @bontiv řeší jeden z hlavních problémů VTherm: dokumentaci. Tato stránka navíc umožňuje analyzovat vaše logy! Poskytněte své logy (v debug režimu) a budete je moci analyzovat, přiblížit konkrétní termostat, zaměřit se na určité období, filtrovat to, co vás zajímá, atd. Objevte tuto první verzi zde: [Versatile Thermostat Web site](https://www.versatile-thermostat.org/). Velké poděkování patří @bontiv za tuto skvělou práci.
+> 3. Oficiální vydání funkce auto-TPI. Tato funkce vypočítává optimální hodnoty koeficientů pro algoritmus [TPI](documentation/fr/algorithms.md#lalgorithme-tpi). Je třeba ocenit neuvěřitelnou práci @KipK a @gael1980 na tomto tématu. Pokud ji chcete používat, určitě si přečtěte dokumentaci.
+> 4. VTherm se nyní opírá o stav hlášený podřízenými zařízeními v HA. Dokud všechna podřízená zařízení nemají v HA známý stav, VTherm zůstává deaktivovaný.
 
 More informations [here](documentation/cs/feature-central-boiler.md).
 

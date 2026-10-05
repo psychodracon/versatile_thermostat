@@ -19,7 +19,7 @@ from custom_components.versatile_thermostat.thermostat_climate import (
     ThermostatOverClimate,
 )
 
-from custom_components.versatile_thermostat.vtherm_api import VersatileThermostatAPI
+from custom_components.versatile_thermostat.vtherm_central_api import VersatileThermostatAPI
 
 from .commons import *  # pylint: disable=wildcard-import, unused-wildcard-import
 from .const import *  # pylint: disable=wildcard-import, unused-wildcard-import
@@ -102,9 +102,7 @@ async def test_add_a_central_config(hass: HomeAssistant, skip_hass_states_is_sta
 
 # @pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_minimal_over_switch_wo_central_config(
-    hass: HomeAssistant, skip_hass_states_is_state, init_vtherm_api
-):
+async def test_minimal_over_switch_wo_central_config(hass: HomeAssistant, skip_hass_states_is_state, init_vtherm_api, fake_underlying_switch: MockSwitch):
     """Tests that a VTherm without any central_configuration is working with its own attributes"""
     # Add a Switch VTherm
     entry = MockConfigEntry(
@@ -172,7 +170,7 @@ async def test_minimal_over_switch_wo_central_config(
         assert entity.proportional_algorithm is not None
         assert entity.proportional_algorithm._tpi_coef_int == 0.3
         assert entity.proportional_algorithm._tpi_coef_ext == 0.01
-        assert entity.proportional_algorithm._minimal_activation_delay == 30
+        assert entity._minimal_activation_delay == 30
         assert entity.safety_manager.safety_delay_min == 5
         assert entity.safety_manager.safety_min_on_percent == 0.3
         assert entity.safety_manager.safety_default_on_percent == 0.1
@@ -183,9 +181,7 @@ async def test_minimal_over_switch_wo_central_config(
 
 @pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_full_over_switch_wo_central_config(
-    hass: HomeAssistant, skip_hass_states_is_state, init_vtherm_api
-):
+async def test_full_over_switch_wo_central_config(hass: HomeAssistant, skip_hass_states_is_state, init_vtherm_api, fake_underlying_switch: MockSwitch):
     """Tests that a VTherm without any central_configuration is working with its own attributes"""
 
     temps = {
@@ -275,7 +271,7 @@ async def test_full_over_switch_wo_central_config(
         assert entity.proportional_algorithm is not None
         assert entity.proportional_algorithm._tpi_coef_int == 0.3
         assert entity.proportional_algorithm._tpi_coef_ext == 0.01
-        assert entity.proportional_algorithm._minimal_activation_delay == 30
+        assert entity._minimal_activation_delay == 30
         assert entity.safety_manager.safety_delay_min == 5
         assert entity.safety_manager.safety_min_on_percent == 0.3
         assert entity.safety_manager.safety_default_on_percent == 0.1
@@ -321,10 +317,9 @@ async def test_full_over_switch_wo_central_config(
 
 @pytest.mark.parametrize("expected_lingering_tasks", [True])
 @pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_full_over_switch_with_central_config(
-    hass: HomeAssistant, skip_hass_states_is_state, init_central_power_manager
-):
+async def test_full_over_switch_with_central_config(hass: HomeAssistant, skip_hass_states_is_state, init_central_power_manager, fake_underlying_switch: MockSwitch):
     """Tests that a VTherm with central_configuration is working with the central_config attributes"""
+
     # Add a Switch VTherm
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -401,7 +396,7 @@ async def test_full_over_switch_with_central_config(
         assert entity.proportional_algorithm is not None
         assert entity.proportional_algorithm._tpi_coef_int == 0.5
         assert entity.proportional_algorithm._tpi_coef_ext == 0.02
-        assert entity.proportional_algorithm._minimal_activation_delay == 11
+        assert entity._minimal_activation_delay == 11
         assert entity.safety_manager.safety_delay_min == 61
         assert entity.safety_manager.safety_min_on_percent == 0.5
         assert entity.safety_manager.safety_default_on_percent == 0.2

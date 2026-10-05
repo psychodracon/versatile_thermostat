@@ -2,6 +2,36 @@
 
 ![New](images/new-icon.png)
 
+## Wydanie 8.6
+> 1. Dodanie parametru `max_opening_degrees` dla termostatów VTherm typu `over_climate_valve` pozwalającego ograniczyć maksymalny procent otwarcia każdego zaworu w celu kontrolowania przepływu gorącej wody i optymalizacji zużycia energii.
+> 2. Dodanie funkcji ponownej kalibracji zaworów dla _VTherm_ `over_climate_valve`, pozwalającej wymusić maksymalne otwarcie, a następnie maksymalne zamknięcie w celu próby ponownej kalibracji TRV. Więcej informacji [tutaj](documentation/pl/feature-recalibrate-valves.md).
+
+## Wydanie 8.5
+> 1. Dodanie wykrywania awarii ogrzewania dla termostatów VTherm używających algorytmu TPI. Ta funkcja wykrywa dwa typy anomalii:
+>    - **awaria ogrzewania**: grzejnik mocno grzeje (wysoki on_percent), ale temperatura nie rośnie,
+>    - **awaria chłodzenia**: grzejnik nie grzeje (on_percent równe 0), ale temperatura nadal rośnie.
+>
+> Anomalie te mogą wskazywać na otwarte okno, uszkodzony grzejnik lub zewnętrzne źródło ciepła. Funkcja wysyła zdarzenia, które mogą być używane do wyzwalania automatyzacji (powiadomienia, alerty itp.). Więcej informacji [tutaj](documentation/pl/feature-heating-failure-detection.md).
+
+## Wydanie 8.4
+> 1. Dodanie eksperymentalnej funkcji automatyzacji algorytmu TPI. Ta nowa funkcja pozwala na automatyczne obliczanie najlepszych współczynników dla algorytmu TPI. Więcej informacji znajdziesz [tutaj](documentation/pl/feature-autotpi.md).
+> 2. Dodanie funkcji synchronizacji temperatury dla urządzenia sterowanego w trybie `na_klimacie`. W zależności od możliwości urządzenia, _VTherm_ może sterować jednostką kalibracji offsetu lub bezpośrednio zewnętrzną encją temperatury. Więcej informacji znajduje się [tutaj](documentation/pl/feature-sync_device_temp.md).
+> 3. Dodanie funkcji _**presetu czasowego**_, która umożliwia wybranie presetu na z góry określony czas i powrót do poprzedniego po upływie wkazanego opóźnienia. Nowa funkcja jest szczegółowo opisana [tutaj](documentation/pl/feature-timed-preset.md).
+>
+
+## Wydanie 8.3
+> 1. Dodanie konfigurowalnego opóźnienia przed załączeniem kotła centralnego.
+> 2. Dodanie wyzwalacza kotła centralnego, gdy całkowita moc aktywowana przekroczy założony próg. Aby ta funkcja działała, musisz:
+> - skonfigurować próg mocy, który uruchomi kocioł. Jest to nowa jednostka dostępna w urządzeniu _„Konfiguracja centralna”_.
+> - skonfigurować wartości mocy termostatów _VTherm_. Można to zrobić na pierwszym ekranie konfiguracji każdego termostatu _VTherm_.
+> - zaznaczyć pole „Używane przez kocioł centralny”.
+>
+> Za każdym razem, gdy VTherm jest aktywowany, jego skonfigurowana moc jest dodawana do sumy, a w przypadku przekroczenia progu, kocioł centralny zostanie uruchomiony po opóźnieniu skonfigurowanym w kroku 1.
+>
+> Poprzedni licznik liczby aktywowanych urządzeń i jego progu nadal istnieją. Aby wyłączyć jeden z progów (próg mocy lub próg liczby aktywnych urządzeń), ustaw jego wartość na zero (`0`). Po przekroczeniu któregokolwiek z dwóch niezerowych progów kocioł zostanie uruchomiony. Dlatego pomiędzy dwoma progami stosuje się alternatywę logiczną _'lub'_.
+>
+> Więcej informacji znajdziesz [tutaj](documentation/pl/feature-central-boiler.md).
+
 ## Wydanie 8.2
 > Dodano opcjonalną funkcję blokowania/odblokowania termostatu _*VTherm*_ za pomocą kodu PIN. Więcej informacji na ten temat znajduje się [tutaj](documentation/pl/feature-lock.md).
 

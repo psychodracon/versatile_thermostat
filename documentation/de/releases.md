@@ -2,6 +2,33 @@
 
 ![Neu](images/new-icon.png)
 
+## Release 8.6
+> 1. Hinzufügen des Parameters `max_opening_degrees` für `over_climate_valve` VTherms, der es ermöglicht, den maximalen Öffnungsgrad jedes Ventils zu begrenzen, um den Heißwasserdurchfluss zu steuern und den Energieverbrauch zu optimieren.
+> 2. Hinzufügen einer Ventil-Neukalibrierungsfunktion für ein _VTherm_ `over_climate_valve`, mit der ein maximales Öffnen und anschließend ein maximales Schließen erzwungen werden kann, um eine Neukalibrierung eines TRV zu versuchen. Weitere Informationen [hier](documentation/de/feature-recalibrate-valves.md).
+
+## Release 8.5
+> 1. Hinzufügen der Erkennung von Heizungsstörungen für VTherms, die den TPI-Algorithmus verwenden. Diese Funktion erkennt zwei Arten von Anomalien:
+>    - **Heizungsstörung**: Der Heizkörper heizt stark (hohes on_percent), aber die Temperatur steigt nicht,
+>    - **Kühlungsstörung**: Der Heizkörper heizt nicht (on_percent bei 0), aber die Temperatur steigt weiter.
+>
+> Diese Anomalien können auf ein offenes Fenster, einen defekten Heizkörper oder eine externe Wärmequelle hinweisen. Die Funktion sendet Ereignisse, die zum Auslösen von Automatisierungen (Benachrichtigungen, Warnungen usw.) verwendet werden können. Weitere Informationen [hier](documentation/de/feature-heating-failure-detection.md).
+
+## Release 8.4
+1. Hinzufügen der automatischen TPI-Funktion (experimental). Diese neue Funktion dient dazu, automatisch die besten Koeffizienten für den TPI-Algorithmus zu berechnen. Weitere Informationen gibt es [hier](documentation/en/feature-autotpi.md).
+2. added a temperature synchronization function for a device controlled in `over_climate` mode. Depending on your device's capabilities, _VTherm_ can control an offset calibration entity or directly an external temperature entity. More information [here](documentation/de/feature-sync_device_temp.md)
+3. added a feature named "timed preset" which aims to select a preset for a certain duration and come back to the previous preset after the expiration of the delay. The new feature is totally described [here](documentation/de/feature-timed-preset.md).
+
+## Release 8.3
+1. Hinzufügen einer konfigurierbaren Verzögerung vor der Heizkesselaktivierung,
+2. Hinzufügen eines Heizkesselstriggers, sobald die gesamte aktivierte Leistung einen Schwellenwert überschreitet. Um diese Funktion zu aktivieren, muss:
+- der Schwellenwert für die Leistung konfiguriert sein, bei dessen Überschreiten der Heizkessel gestartet wird. Dies ist eine neue Funktion, die im Gerät 'Zentrale Konfiguration' verfügbar ist.
+- die Leistungen der VTherms konfiguriert sein. Diese befindet sich auf der ersten Konfigurationsseite der VTherms.
+- das Kästchen `Vom Zentralheizkessel verwendet` ankreuzt sein.
+
+Jedes Mal, wenn ein VTherm aktiviert wird, wird seine konfigurierte Leistung hinzugefügt, und sobald der Schwellenwert überschritten wird, wird der Zentralheizungskessel nach der in 1 konfigurierten Verzögerungszeit aktiviert.
+
+Der alte Zähler für die Anzahl der aktivierten Geräte und sein Schwellenwert sind weiterhin vorhanden. Um einen der Schwellenwerte (den Leistungsschwellenwert oder den Schwellenwert für die Anzahl der aktivierten Geräte) zu deaktivieren, muss er auf Null gesetzt werden. Sobald einer der beiden Schwellenwerte ungleich Null überschritten wird, wird der Heizkessel aktiviert. Es handelt sich also um eine „logische ODER-Verknüpfung” zwischen den beiden Schwellenwerten.
+
 ## Release 8.2
 > - Hinzufügen einer Funktion zum Sperren/Entsperren eines _VTherm_ mit einem möglichen Code. Weitere Informationen [hier](documentation/de/feature-lock.md)
 

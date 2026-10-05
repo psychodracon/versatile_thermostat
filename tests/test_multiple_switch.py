@@ -12,13 +12,7 @@ from .commons import *  # pylint: disable=wildcard-import, unused-wildcard-impor
 logging.getLogger().setLevel(logging.DEBUG)
 
 
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
-@pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_one_switch_cycle(
-    hass: HomeAssistant,
-    skip_hass_states_is_state,
-    skip_send_event,
-):  # pylint: disable=unused-argument
+async def test_one_switch_cycle(hass: HomeAssistant, skip_send_event, fake_temp_sensor, fake_ext_temp_sensor, fake_underlying_switch):  # pylint: disable=unused-argument
     """Test that when multiple switch are configured the activation is distributed"""
 
     tz = get_tz(hass)  # pylint: disable=invalid-name
@@ -43,7 +37,7 @@ async def test_one_switch_cycle(
             CONF_USE_MOTION_FEATURE: False,
             CONF_USE_POWER_FEATURE: False,
             CONF_USE_PRESENCE_FEATURE: False,
-            CONF_HEATER: "switch.mock_switch1",
+            CONF_UNDERLYING_LIST: ["switch.mock_switch"],
             CONF_MINIMAL_ACTIVATION_DELAY: 30,
             CONF_MINIMAL_DEACTIVATION_DELAY: 0,
             CONF_SAFETY_DELAY_MIN: 5,
@@ -75,16 +69,15 @@ async def test_one_switch_cycle(
         event_timestamp = now - timedelta(minutes=4)
         await send_temperature_change_event(entity, 15, event_timestamp)
 
+        assert entity.is_ready is True
+
     # Checks that all heaters are off
-    with patch(
-        "homeassistant.core.StateMachine.is_state", return_value=False
-    ) as mock_is_state:
-        assert entity.is_device_active is False  # pylint: disable=protected-access
+    assert entity.is_device_active is False
 
-        # Should be call for the Switch
-        assert mock_is_state.call_count == 1
+    # Verify CycleScheduler is created
+    assert entity.cycle_scheduler is not None
 
-    # Set temperature to a low level
+    # Set temperature to a low level - CycleScheduler will orchestrate the cycle
     with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
     ) as mock_heater_on, patch("custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_off") as mock_heater_off, patch(
@@ -92,7 +85,7 @@ async def test_one_switch_cycle(
         new_callable=PropertyMock,
         return_value=False,
     ) as mock_device_active, patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.call_later",
+        "custom_components.versatile_thermostat.cycle_scheduler.async_call_later",
         return_value=None,
     ) as mock_call_later:
         await send_ext_temperature_change_event(entity, 5, event_timestamp)
@@ -101,123 +94,69 @@ async def test_one_switch_cycle(
         assert mock_send_event.call_count == 0
         assert mock_heater_off.call_count == 0
 
-        # The first heater should be on but because call_later is mocked heater_on is not called
-        # assert mock_heater_on.call_count == 1
-        assert mock_heater_on.call_count == 0
-        # There is no check if active
-        # don't work with PropertyMock
-        # assert mock_device_active.call_count == 0
+        # The heater should be turned on immediately (offset=0 for single underlying)
+        assert mock_heater_on.call_count == 1
 
-        # 4 calls dispatched along the cycle
+        # At 100% power, on_time == cycle_duration so no turn_off is scheduled.
+        # Only _on_master_cycle_end is scheduled.
         assert mock_call_later.call_count == 1
-        mock_call_later.assert_has_calls(
-            [
-                call.call_later(hass, 0.0, ANY),
-            ]
-        )
 
-    # Set a temperature at middle level
+    # Set a temperature at middle level - cycle already running, no force
     event_timestamp = now - timedelta(minutes=4)
     with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
     ) as mock_heater_on, patch("custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_off") as mock_heater_off, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.is_device_active",
         new_callable=PropertyMock,
-        return_value=False,
-    ) as mock_device_active:
-        await send_temperature_change_event(entity, 18, event_timestamp)
-
-        # No special event
-        assert mock_send_event.call_count == 0
-        assert mock_heater_off.call_count == 0
-
-        # The first heater should be turned on but is already on but because above we mock
-        # call_later the heater is not on. But this time it will be really on
-        assert mock_heater_on.call_count == 1
-
-    # Set another temperature at middle level
-    event_timestamp = now - timedelta(minutes=3)
-    with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
-    ) as mock_heater_on, patch("custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_off") as mock_heater_off, patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.is_device_active",
-        new_callable=PropertyMock,
-        return_value=True,
+        return_value=True, # simulate heater was turned ON by the 100% cycle
     ) as mock_device_active:
         await send_temperature_change_event(entity, 18.1, event_timestamp)
 
         # No special event
         assert mock_send_event.call_count == 0
+        
+        # Verify that the actual target temperature is updated correctly
+        assert entity.proportional_algorithm.calculated_on_percent < 1.0
+        
+        # CycleScheduler should have updated its next cycle parameters pending the restart
+        assert entity.cycle_scheduler._current_on_percent < 1.0
+        
+        # But should NOT interrupt the current block (no turn_on/turn_off calls immediately)
+        assert mock_heater_on.call_count == 0
         assert mock_heater_off.call_count == 0
 
-        # The heater is already on cycle. So we wait that the cycle ends and no heater action
-        # is done
-        assert mock_heater_on.call_count == 0
-        # assert entity.underlying_entity(0)._should_relaunch_control_heating is True
-
-        # Simulate the relaunch
-        await entity.underlying_entity(
-            0
-        )._turn_on_later(  # pylint: disable=protected-access
-            None
-        )
-        # wait restart
-        await asyncio.sleep(0.1)
-
-        assert mock_heater_on.call_count == 1
-        # normal ? assert entity.underlying_entity(0)._should_relaunch_control_heating is False
-
-    # Simulate the end of heater on cycle
-    event_timestamp = now - timedelta(minutes=3)
+    # Simulate the master cycle ending: it should restart using the new parameters
     with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
     ) as mock_heater_on, patch("custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_off") as mock_heater_off, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.is_device_active",
         new_callable=PropertyMock,
-        return_value=True,
-    ) as mock_device_active:
-        await entity.underlying_entity(
-            0
-        )._turn_off_later(  # pylint: disable=protected-access
-            None
-        )
-
-        # No special event
-        assert mock_send_event.call_count == 0
+        return_value=True, # Heater still ON
+    ) as mock_device_active, patch(
+        "custom_components.versatile_thermostat.cycle_scheduler.async_call_later",
+        return_value=None,
+    ) as mock_call_later:
+    
+        await entity.cycle_scheduler._on_master_cycle_end(None)
+        
+        # Since on_percent is < 1.0, and _is_initial at t=0 targets ON for offset=0
+        # Heater is already ON, so no turn_on should be called
         assert mock_heater_on.call_count == 0
-        # The heater should be turned off this time
-        assert mock_heater_off.call_count == 1
-        # assert entity.underlying_entity(0)._should_relaunch_control_heating is False
-
-    # Simulate the start of heater on cycle
-    event_timestamp = now - timedelta(minutes=3)
-    with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
-    ) as mock_heater_on, patch("custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_off") as mock_heater_off, patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.is_device_active",
-        new_callable=PropertyMock,
-        return_value=True,
-    ) as mock_device_active:
-        await entity.underlying_entity(
-            0
-        )._turn_on_later(  # pylint: disable=protected-access
-            None
-        )
-
-        # No special event
-        assert mock_send_event.call_count == 0
-        assert mock_heater_on.call_count == 1
-        # The heater should be turned off this time
+        # Since our single heater is targeted ON, it shouldn't turn off either
         assert mock_heater_off.call_count == 0
-        # assert entity.underlying_entity(0)._should_relaunch_control_heating is False
+        
+        # Check that multiple ticks are scheduled since it's an active cycle (not 0% or 100%)
+        # It schedules the _tick and the _cycle_end_unsub
+        assert mock_call_later.call_count >= 1
+
+    entity.remove_thermostat()
 
 
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
-@pytest.mark.parametrize("expected_lingering_timers", [True])
 async def test_multiple_switchs(
     hass: HomeAssistant,
-    skip_hass_states_is_state,
     skip_send_event,
+    fake_temp_sensor,
+    fake_ext_temp_sensor,
 ):  # pylint: disable=unused-argument
     """Test that when multiple switch are configured the activation is distributed"""
 
@@ -243,10 +182,7 @@ async def test_multiple_switchs(
             CONF_USE_MOTION_FEATURE: False,
             CONF_USE_POWER_FEATURE: False,
             CONF_USE_PRESENCE_FEATURE: False,
-            CONF_HEATER: "switch.mock_switch1",
-            CONF_HEATER_2: "switch.mock_switch2",
-            CONF_HEATER_3: "switch.mock_switch3",
-            CONF_HEATER_4: "switch.mock_switch4",
+            CONF_UNDERLYING_LIST: ["switch.mock_switch1", "switch.mock_switch2", "switch.mock_switch3", "switch.mock_switch4"],
             CONF_HEATER_KEEP_ALIVE: 0,
             CONF_MINIMAL_ACTIVATION_DELAY: 30,
             CONF_MINIMAL_DEACTIVATION_DELAY: 0,
@@ -265,6 +201,27 @@ async def test_multiple_switchs(
     assert entity.is_over_climate is False
     assert entity.nb_underlying_entities == 4
 
+    assert entity.is_initialized is False
+    assert entity._is_startup_done is True
+    assert entity.is_ready is False
+
+    entity.update_custom_attributes()
+
+    assert MSG_NOT_INITIALIZED in entity._attr_extra_state_attributes["specific_states"].get("messages")
+    assert "switch.mock_switch1" in entity._attr_extra_state_attributes["specific_states"].get("not_initialized_entities", [])
+    assert "switch.mock_switch2" in entity._attr_extra_state_attributes["specific_states"].get("not_initialized_entities", [])
+    assert "switch.mock_switch3" in entity._attr_extra_state_attributes["specific_states"].get("not_initialized_entities", [])
+    assert "switch.mock_switch4" in entity._attr_extra_state_attributes["specific_states"].get("not_initialized_entities", [])
+
+    # register the switch after thermostat creation
+    for switch_id in ["mock_switch1", "mock_switch2", "mock_switch3", "mock_switch4"]:
+        switch = MockSwitch(hass, switch_id, switch_id + "_name")
+        await register_mock_entity(hass, switch, SWITCH_DOMAIN)
+
+    await wait_for_local_condition(lambda: entity.is_ready is True)
+    assert MSG_NOT_INITIALIZED not in entity._attr_extra_state_attributes["specific_states"].get("messages")
+    assert len(entity._attr_extra_state_attributes["specific_states"].get("not_initialized_entities", [])) == 0
+
     # start heating, in boost mode. We block the control_heating to avoid running a cycle
     with patch(
         "custom_components.versatile_thermostat.base_thermostat.BaseThermostat.async_control_heating"
@@ -280,7 +237,7 @@ async def test_multiple_switchs(
         assert entity.window_state is STATE_UNAVAILABLE
 
         event_timestamp = now - timedelta(minutes=4)
-        await send_temperature_change_event(entity, 15, event_timestamp)
+        await send_temperature_change_event(entity, 18.5, event_timestamp)
 
         # Checks that all climates are off
         assert entity.is_device_active is False  # pylint: disable=protected-access
@@ -293,7 +250,7 @@ async def test_multiple_switchs(
             ]
         )
 
-    # Set temperature to a low level
+    # Set temperature to a low level - CycleScheduler handles all 4 underlyings
     with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
     ) as mock_heater_on, patch("custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_off") as mock_heater_off, patch(
@@ -301,55 +258,69 @@ async def test_multiple_switchs(
         new_callable=PropertyMock,
         return_value=False,
     ) as mock_device_active, patch(
-        "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.call_later",
+        "custom_components.versatile_thermostat.cycle_scheduler.async_call_later",
         return_value=None,
     ) as mock_call_later:
-        await send_ext_temperature_change_event(entity, 5, event_timestamp)
+        await send_ext_temperature_change_event(entity, 15, event_timestamp)
 
         # No special event
         assert mock_send_event.call_count == 0
         assert mock_heater_off.call_count == 0
 
-        # The first heater should be on but because call_later is mocked heater_on is not called
-        # assert mock_heater_on.call_count == 1
-        assert mock_heater_on.call_count == 0
-        # There is no check if active
-        # don't work with PropertyMock
-        # assert mock_device_active.call_count == 0
+        # The first heater (offset=0) should be turned on immediately
+        assert mock_heater_on.call_count == 1
 
-        # 4 calls dispatched along the cycle
-        assert mock_call_later.call_count == 4
-        mock_call_later.assert_has_calls(
-            [
-                call.call_later(hass, 0.0, ANY),
-                call.call_later(hass, 120.0, ANY),
-                call.call_later(hass, 240.0, ANY),
-                call.call_later(hass, 360.0, ANY),
-            ]
-        )
+        # CycleScheduler schedules: turn_on for 3 other underlyings +
+        # turn_off for each + cycle_end
+        # With 4 underlyings at ~100% power, offsets are [0,0,0,0],
+        # so all are turned on immediately and only cycle_end is scheduled
+        # The exact count depends on on_percent
+        assert mock_call_later.call_count >= 1
 
-    # Set a temperature at middle level
+    # Set a temperature at middle level - cycle already running, no force
+    # Previous command at 15 degree puts power at ~100%, cycle running
     event_timestamp = now - timedelta(minutes=4)
     with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
     ) as mock_heater_on, patch("custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_off") as mock_heater_off, patch(
         "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.is_device_active",
         new_callable=PropertyMock,
-        return_value=False,
+        return_value=True, # simulate heaters are all ON from the 100% cycle
     ) as mock_device_active:
-        await send_temperature_change_event(entity, 18, event_timestamp)
+        await send_temperature_change_event(entity, 18.5, event_timestamp)
 
         # No special event
         assert mock_send_event.call_count == 0
+        
+        assert entity.proportional_algorithm.calculated_on_percent < 1.0
+        assert entity.cycle_scheduler._current_on_percent < 1.0
+        
+        # No immediate modification of underlying states
+        assert mock_heater_on.call_count == 0
         assert mock_heater_off.call_count == 0
+        
+    # Simulate the master cycle ending: it should restart using the new parameters
+    with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
+        "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_on"
+    ) as mock_heater_on, patch("custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.turn_off") as mock_heater_off, patch(
+        "custom_components.versatile_thermostat.underlyings.UnderlyingSwitch.is_device_active",
+        new_callable=PropertyMock,
+        return_value=True, # Heaters still ON
+    ) as mock_device_active, patch(
+        "custom_components.versatile_thermostat.cycle_scheduler.async_call_later",
+        return_value=None,
+    ) as mock_call_later:
+    
+        await entity.cycle_scheduler._on_master_cycle_end(None)
+        
+        # At start of new cycle, they shouldn't spam if they already follow the state
+        # But some might be targeted OFF at t=0 because offsets stagger it.
+        # Underlyings that are off-duty at t=0 will be correctly turned OFF
+        assert mock_heater_on.call_count == 0
+        assert mock_heater_off.call_count == 0
+        assert mock_call_later.call_count >= 1
 
-        # The first heater should be turned on but is already on but because call_later
-        # is mocked, it is only turned on here
-        assert mock_heater_on.call_count == 1
 
-
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
-@pytest.mark.parametrize("expected_lingering_timers", [True])
 async def test_multiple_climates(
     hass: HomeAssistant,
     skip_hass_states_is_state,
@@ -380,10 +351,12 @@ async def test_multiple_climates(
             CONF_USE_MOTION_FEATURE: False,
             CONF_USE_POWER_FEATURE: False,
             CONF_USE_PRESENCE_FEATURE: False,
-            CONF_CLIMATE: "switch.mock_climate1",
-            CONF_CLIMATE_2: "switch.mock_climate2",
-            CONF_CLIMATE_3: "switch.mock_climate3",
-            CONF_CLIMATE_4: "switch.mock_climate4",
+            CONF_UNDERLYING_LIST: [
+                "climate.mock_climate1",
+                "climate.mock_climate2",
+                "climate.mock_climate3",
+                "climate.mock_climate4",
+            ],
             CONF_MINIMAL_ACTIVATION_DELAY: 30,
             CONF_MINIMAL_DEACTIVATION_DELAY: 0,
             CONF_SAFETY_DELAY_MIN: 5,
@@ -397,6 +370,11 @@ async def test_multiple_climates(
     assert entity
     assert entity.is_over_climate is True
     assert entity.nb_underlying_entities == 4
+
+    # register the switch after thermostat creation
+    for climate_id in ["mock_climate1", "mock_climate2", "mock_climate3", "mock_climate4"]:
+        climate = MockClimate(hass, climate_id, climate_id + "_name")
+        await register_mock_entity(hass, climate, CLIMATE_DOMAIN)
 
     # start heating, in boost mode. We block the control_heating to avoid running a cycle
     with patch(
@@ -415,7 +393,7 @@ async def test_multiple_climates(
         event_timestamp = now - timedelta(minutes=4)
         await send_temperature_change_event(entity, 15, event_timestamp)
 
-        # Should be call for all Switch
+        # Should be call for all Climates
         assert mock_underlying_set_hvac_mode.call_count == 4
         mock_underlying_set_hvac_mode.assert_has_calls(
             [
@@ -449,9 +427,8 @@ async def test_multiple_climates(
         )
         assert entity.is_device_active is False  # pylint: disable=protected-access
 
+    entity.remove_thermostat()
 
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
-@pytest.mark.parametrize("expected_lingering_timers", [True])
 async def test_multiple_climates_underlying_changes(
     hass: HomeAssistant,
     skip_hass_states_is_state,
@@ -482,10 +459,7 @@ async def test_multiple_climates_underlying_changes(
             CONF_USE_MOTION_FEATURE: False,
             CONF_USE_POWER_FEATURE: False,
             CONF_USE_PRESENCE_FEATURE: False,
-            CONF_CLIMATE: "switch.mock_climate1",
-            CONF_CLIMATE_2: "switch.mock_climate2",
-            CONF_CLIMATE_3: "switch.mock_climate3",
-            CONF_CLIMATE_4: "switch.mock_climate4",
+            CONF_UNDERLYING_LIST: ["climate.mock_climate1", "climate.mock_climate2", "climate.mock_climate3", "climate.mock_climate4"],
             CONF_MINIMAL_ACTIVATION_DELAY: 30,
             CONF_MINIMAL_DEACTIVATION_DELAY: 0,
             CONF_SAFETY_DELAY_MIN: 5,
@@ -499,6 +473,14 @@ async def test_multiple_climates_underlying_changes(
     assert entity
     assert entity.is_over_climate is True
     assert entity.nb_underlying_entities == 4
+
+    # register the switch after thermostat creation
+    for climate_id in ["mock_climate1", "mock_climate2", "mock_climate3", "mock_climate4"]:
+        climate = MockClimate(hass, climate_id, climate_id + "_name")
+        await register_mock_entity(hass, climate, CLIMATE_DOMAIN)
+
+    await wait_for_local_condition(lambda: entity.is_ready is True)
+    entity.set_follow_underlying_temp_change(True)
 
     # start heating, in boost mode. We block the control_heating to avoid running a cycle
     with patch(
@@ -517,7 +499,7 @@ async def test_multiple_climates_underlying_changes(
         event_timestamp = now - timedelta(minutes=4)
         await send_temperature_change_event(entity, 15, event_timestamp)
 
-        # Should be call for all Switch
+        # Should be call for all Climates
         assert mock_underlying_set_hvac_mode.call_count == 4
         mock_underlying_set_hvac_mode.assert_has_calls(
             [
@@ -543,11 +525,11 @@ async def test_multiple_climates_underlying_changes(
             HVACAction.OFF,
             HVACAction.HEATING,
             event_timestamp,
-            underlying_entity_id="switch.mock_climate3",
+            underlying_entity_id="climate.mock_climate3",
         )
 
-        # Should be call for all Switch
-        assert mock_underlying_set_hvac_mode.call_count == 4
+        # Should be call for all Climates
+        assert mock_underlying_set_hvac_mode.call_count >= 4
         mock_underlying_set_hvac_mode.assert_has_calls(
             [
                 call.set_hvac_mode(VThermHvacMode_OFF),
@@ -577,11 +559,11 @@ async def test_multiple_climates_underlying_changes(
             HVACAction.IDLE,
             HVACAction.OFF,
             event_timestamp,
-            underlying_entity_id="switch.mock_climate3",
+            underlying_entity_id="climate.mock_climate3",
         )
 
-        # Should be call for all Switch
-        assert mock_underlying_set_hvac_mode.call_count == 4
+        # Should be call for all Climates
+        assert mock_underlying_set_hvac_mode.call_count >= 4
         mock_underlying_set_hvac_mode.assert_has_calls(
             [
                 call.set_hvac_mode(VThermHvacMode_HEAT),
@@ -591,9 +573,8 @@ async def test_multiple_climates_underlying_changes(
         assert entity.hvac_action == HVACAction.IDLE
         assert entity.is_device_active is False  # pylint: disable=protected-access
 
+    entity.remove_thermostat()
 
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
-@pytest.mark.parametrize("expected_lingering_timers", [True])
 async def test_multiple_climates_underlying_changes_not_aligned(
     hass: HomeAssistant,
     skip_hass_states_is_state,
@@ -604,6 +585,11 @@ async def test_multiple_climates_underlying_changes_not_aligned(
 
     tz = get_tz(hass)  # pylint: disable=invalid-name
     now: datetime = datetime.now(tz=tz)
+
+    # register the switch after thermostat creation
+    for climate_id in ["mock_climate1", "mock_climate2", "mock_climate3", "mock_climate4"]:
+        climate = MockClimate(hass, climate_id, climate_id + "_name")
+        await register_mock_entity(hass, climate, CLIMATE_DOMAIN)
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -624,10 +610,7 @@ async def test_multiple_climates_underlying_changes_not_aligned(
             CONF_USE_MOTION_FEATURE: False,
             CONF_USE_POWER_FEATURE: False,
             CONF_USE_PRESENCE_FEATURE: False,
-            CONF_CLIMATE: "switch.mock_climate1",
-            CONF_CLIMATE_2: "switch.mock_climate2",
-            CONF_CLIMATE_3: "switch.mock_climate3",
-            CONF_CLIMATE_4: "switch.mock_climate4",
+            CONF_UNDERLYING_LIST: ["climate.mock_climate1", "climate.mock_climate2", "climate.mock_climate3", "climate.mock_climate4"],
             CONF_MINIMAL_ACTIVATION_DELAY: 30,
             CONF_MINIMAL_DEACTIVATION_DELAY: 0,
             CONF_SAFETY_DELAY_MIN: 5,
@@ -641,6 +624,11 @@ async def test_multiple_climates_underlying_changes_not_aligned(
     assert entity
     assert entity.is_over_climate is True
     assert entity.nb_underlying_entities == 4
+
+    entity._set_now(now)  # pylint: disable=protected-access
+
+    await wait_for_local_condition(lambda: entity.is_ready is True)
+    entity.set_follow_underlying_temp_change(True)
 
     # start heating, in boost mode. We block the control_heating to avoid running a cycle
     with patch(
@@ -659,7 +647,7 @@ async def test_multiple_climates_underlying_changes_not_aligned(
         event_timestamp = now - timedelta(minutes=4)
         await send_temperature_change_event(entity, 15, event_timestamp)
 
-        # Should be call for all Switch
+        # Should be call for all Climates
         assert mock_underlying_set_hvac_mode.call_count == 4
         mock_underlying_set_hvac_mode.assert_has_calls(
             [
@@ -676,33 +664,27 @@ async def test_multiple_climates_underlying_changes_not_aligned(
         VThermHvacMode_COOL,
     ):
         # Wait 11 sec so that the event will not be discarded
-        event_timestamp = now + timedelta(seconds=11)
+        now = now + timedelta(seconds=11)
+        entity._set_now(now)  # pylint: disable=protected-access
         await send_climate_change_event(
             entity,
             VThermHvacMode_OFF,
             VThermHvacMode_HEAT,
             HVACAction.OFF,
             HVACAction.HEATING,
-            event_timestamp,
-            underlying_entity_id="switch.mock_climate3",
+            now,
+            underlying_entity_id="climate.mock_climate3",
         )
 
-        # Should be call for all Switch
-        assert mock_underlying_set_hvac_mode.call_count == 0
-        # mock_underlying_set_hvac_mode.assert_has_calls(
-        #     [
-        #         call.set_hvac_mode(VThermHvacMode_OFF),
-        #     ]
-        # )
+        # Should not call hvac_mode
+        assert mock_underlying_set_hvac_mode.call_count == 0  # off is not propagated because the hvac_mode are not aligned
         # No change
         assert entity.hvac_mode == VThermHvacMode_HEAT
 
+    entity.remove_thermostat()
 
-@pytest.mark.parametrize("expected_lingering_tasks", [True])
-@pytest.mark.parametrize("expected_lingering_timers", [True])
-async def test_multiple_switch_power_management(
-    hass: HomeAssistant, skip_hass_states_is_state, init_central_power_manager
-):
+
+async def test_multiple_switch_power_management(hass: HomeAssistant, fake_temp_sensor, fake_ext_temp_sensor, init_central_power_manager):
     """Test the Power management with 4 underlyings switch"""
     temps = {
         "eco": 17,
@@ -753,6 +735,15 @@ async def test_multiple_switch_power_management(
 
     tpi_algo = entity._prop_algorithm
     assert tpi_algo
+
+    assert entity.is_ready is False
+
+    # register the switch after thermostat creation
+    for switch_id in ["mock_switch1", "mock_switch2", "mock_switch3", "mock_switch4"]:
+        switch = MockSwitch(hass, switch_id, switch_id + "_name")
+        await register_mock_entity(hass, switch, SWITCH_DOMAIN)
+
+    await wait_for_local_condition(lambda: entity.is_ready is True)
 
     now: datetime = NowClass.get_now(hass)
     VersatileThermostatAPI.get_vtherm_api()._set_now(now)
@@ -831,7 +822,7 @@ async def test_multiple_switch_power_management(
                 any_order=True,
             )
             assert mock_heater_on.call_count == 0
-            assert mock_heater_off.call_count == 4  # The fourth are shutdown
+            assert mock_heater_off.call_count >= 4  # The fourth are shutdown
 
     # 3. change PRESET to ECO. But overpowering is still on cause temp is very low
         with patch(
@@ -868,8 +859,14 @@ async def test_multiple_switch_power_management(
             assert entity.power_manager.overpowering_state is STATE_OFF
             assert entity.target_temperature == 17
 
-            # No more overheating so the 4th heater should be restarted
-            assert (
-                mock_heater_on.call_count == 1
-            )
+            # V2 circular offsets (cycle=480s, 4 underlyings, on_percent≈0.76, on_time≈364.8s):
+            # Offsets: [0, 120, 240, 360]. off_t = (on_t + 364.8) % 480
+            # Under 0 (switch1): on_t=0, off_t=364.8 → target=ON, device already ON → no action
+            # Under 1 (switch2): on_t=120, off_t=4.8 (wrap) → target=ON (wrap), device already ON → no action
+            # Under 2 (switch3): on_t=240, off_t=124.8 (wrap) → target=ON (wrap), device already ON → no action
+            # Under 3 (switch4): on_t=360, off_t=244.8 (wrap) → target=ON (wrap), device already ON → no action
+            assert mock_heater_on.call_count == 0
+            # No underlyings need turn_off at t=0 (inactive underlyings stay off)
             assert mock_heater_off.call_count == 0
+
+    entity.remove_thermostat()

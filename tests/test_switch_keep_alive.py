@@ -153,7 +153,7 @@ class TestKeepAlive:
 
     @pytest.mark.parametrize("expected_lingering_tasks", [True])
     @pytest.mark.parametrize("expected_lingering_timers", [True])
-    async def test_switch_keep_alive_startup(self, common_mocks: CommonMocks):
+    async def test_switch_keep_alive_startup(self, common_mocks: CommonMocks, fake_underlying_switch: MockSwitch):
         """Test that switch keep-alive service calls are made at startup time."""
 
         thermostat = common_mocks.thermostat
@@ -186,7 +186,7 @@ class TestKeepAlive:
 
     @pytest.mark.parametrize("expected_lingering_tasks", [True])
     @pytest.mark.parametrize("expected_lingering_timers", [True])
-    async def test_switch_keep_alive(self, common_mocks: CommonMocks):
+    async def test_switch_keep_alive(self, common_mocks: CommonMocks, fake_underlying_switch: MockSwitch):
         """Test that switch keep-alive service calls are made during thermostat operation."""
 
         hass = common_mocks.hass
@@ -233,6 +233,9 @@ class TestKeepAlive:
         )
 
         # 2. Increase the temperature to deactivate the heater switch
+
+        # Cancel the existing cycle so the new cycle with on_time_sec=0 can start
+        await thermostat.cycle_scheduler.cancel_cycle()
 
         await send_temperature_change_event(thermostat, 20, event_timestamp)
 
