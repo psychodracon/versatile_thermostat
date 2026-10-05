@@ -528,6 +528,7 @@ async def test_user_config_flow_over_climate(
         CONF_AUTO_REGULATION_MODE: CONF_AUTO_REGULATION_STRONG,
         CONF_AUTO_START_STOP_LEVEL: AUTO_START_STOP_LEVEL_NONE,
         CONF_SYNC_DEVICE_INTERNAL_TEMP: False,
+        CONF_HVAC_MODE_MAPPING_HEAT: HVAC_MODE_MAPPING_DEFAULT,
     }
     assert result["result"]
     assert result["result"].domain == DOMAIN
@@ -780,6 +781,7 @@ async def test_user_config_flow_over_climate_auto_start_stop(
         CONF_AUTO_START_STOP_LEVEL: AUTO_START_STOP_LEVEL_MEDIUM,
         CONF_AUTO_REGULATION_MODE: CONF_AUTO_REGULATION_STRONG,
         CONF_SYNC_DEVICE_INTERNAL_TEMP: False,
+        CONF_HVAC_MODE_MAPPING_HEAT: HVAC_MODE_MAPPING_DEFAULT,
     }
     assert result["result"]
     assert result["result"].domain == DOMAIN
@@ -1512,6 +1514,7 @@ async def test_user_config_flow_over_climate_valve(
         CONF_USED_BY_CENTRAL_BOILER: False,
         CONF_USE_CENTRAL_MODE: False,
         CONF_AUTO_REGULATION_MODE: CONF_AUTO_REGULATION_VALVE,
+        CONF_HVAC_MODE_MAPPING_HEAT: HVAC_MODE_MAPPING_DEFAULT,
         CONF_UNDERLYING_LIST: ["climate.mock_climate1", "climate.mock_climate2"],
         CONF_OPENING_DEGREE_LIST: ["number.opening_degree1", "number.opening_degree2"],
         CONF_CLOSING_DEGREE_LIST: [],
