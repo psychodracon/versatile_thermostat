@@ -12,7 +12,7 @@ Instalace by měla být podobná nastavení VTherm `over_switch`, kromě toho, �
 
 1. Uživatel nebo automatizace, nebo Scheduler, nastaví setpoint prostřednictvím preset nebo přímo pomocí teploty.
 2. Periodicky vnitřní teploměr (2) nebo vnější teploměr (2b) nebo vnitřní teploměr zařízení (2c) pošle naměřenou teplotu. Vnitřní teploměr by měl být umístěn na relevantním místě pro pohodlí uživatele: ideálně uprostřed obytného prostoru. Vyhněte se umístění příliš blízko okna nebo příliš blízko zařízení.
-3. Na základě hodnot setpointu, různých teplot a parametrů algoritmu TPI (viz [TPI](algorithms.md#lalgorithme-tpi)), VTherm vypočítá procento otevření ventilu.
+3. Na základě hodnot setpointu, různých teplot a parametrů algoritmu TPI (viz [TPI](algorithms.md#algoritmus-tpi)), VTherm vypočítá procento otevření ventilu.
 4. Poté upraví hodnotu podkladových entit `number`.
 5. Tyto podkladové entity `number` budou ovládat míru otevření ventilu na _TRV_.
 6. To bude regulovat vytápění radiátoru.
@@ -28,4 +28,35 @@ Poté klikněte na možnost "Podkladové entity" z menu a uvidíte tuto konfigur
 
 Aktuálně dostupný algoritmus je TPI. Viz [algoritmus](#algorithm).
 
+### Řízení otevření ventilu
+
+`over_valve` může upravit povel otevření TPI podle fyzických limitů každého
+ventilu. `opening_threshold_degree` se vyhodnocuje podle surového procenta
+TPI. Je-li tato hodnota pod prahem, cílová hodnota je
+`100 - max_closing_degree`. Poté se použije minimální stupeň otevření a
+následně maximální stupeň otevření. `opening_threshold_degree` a
+`max_closing_degree` platí pro celý termostat. Při výchozím nastavení zůstává
+odeslaný povel stejný jako surové procento TPI.
+
+Fyzický povel nikdy neklesne pod `100 - max_closing_degree`, ani když surový
+požadavek TPI dosáhne `opening_threshold_degree`, a při růstu požadavku je
+neklesající. Požadavek na vytápění se určuje z kladného surového procenta TPI
+na prahu nebo nad ním; pozorovaný ventil je aktivní pouze nad svým účinným
+fyzickým minimem, omezeným také minimem entity. Při spuštění nebo opětovném
+načtení se ventil bez požadavku vrátí na toto minimum.
+
+`min_opening_degrees` a `max_opening_degrees` jsou seznamy CSV v pořadí
+podkladových ventilů. Neúplné seznamy jsou povoleny: chybějící hodnoty použijí
+výchozí nastavení. Seznamy s více hodnotami než nakonfigurovaných ventilů jsou
+odmítnuty.
+
 Je možné vybrat `thermostat_over_valve` pro ovládání klimatizace zaškrtnutím políčka "AC režim". V tomto případě bude viditelný pouze chladicí režim.
+
+### Režim spánku
+
+`over_valve` podporuje režim spánku. Výběr `sleep` nebo volání akce
+`versatile_thermostat.set_hvac_mode_sleep` zobrazí VTherm jako vypnutý a zároveň
+odešle požadavek na otevření 100 % do každého podkladového ventilu. Běžný převod
+řízení otevření se zachová: `max_opening_degrees` a limity entity `number` tak
+stále mohou omezit fyzické otevření. Režim spánku nevyžaduje vytápění z
+centrálního kotle; tento stav označuje atribut `is_sleeping`.

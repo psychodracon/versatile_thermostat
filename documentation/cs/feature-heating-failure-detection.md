@@ -1,5 +1,10 @@
 # Detekce poruchy vytápění
 
+> [!IMPORTANT]
+> Plugin `vtherm_heating_failure_detection` je připraven k migraci.
+> Konfigurace v jádře zůstává během této přechodové verze podporována.
+> Pro jeden termostat nastavte plugin nebo funkci jádra, ale ne obojí.
+
 - [Detekce poruchy vytápění](#detekce-poruchy-vytápění)
   - [Proč tato funkce?](#proč-tato-funkce)
   - [Princip fungování](#princip-fungování)
@@ -68,7 +73,7 @@ Stejně jako mnoho funkcí _VTherm_, i tuto funkci lze konfigurovat **v centrál
 
 Pro přístup:
 1. Přejděte do konfigurace vašeho _VTherm_ typu "Centrální konfigurace"
-2. V menu vyberte "Heating failure detection" (Detekce poruchy vytápění)
+2. V menu vyberte „Detekce poruchy vytápění“
 3. Poté přejděte do konfigurace příslušných _VTherm_,
 4. Vyberte menu "Funkce",
 5. Zaškrtněte funkci "Detekce poruch vytápění",

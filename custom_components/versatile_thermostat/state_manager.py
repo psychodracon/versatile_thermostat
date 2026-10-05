@@ -13,6 +13,7 @@ from .const import (
     HVAC_OFF_REASON_AUTO_START_STOP,
     HVAC_OFF_REASON_SLEEP_MODE,
     HVAC_OFF_REASON_CENTRAL_MODE,
+    AUTO_START_STOP_HVAC_MODE_REASONS,
     CONF_WINDOW_ECO_TEMP,
     CONF_WINDOW_FAN_ONLY,
     CONF_WINDOW_FROST_TEMP,
@@ -112,13 +113,16 @@ class StateManager:
         if vtherm.last_central_mode == CENTRAL_MODE_STOPPED:
             self._current_state.set_hvac_mode(VThermHvacMode_OFF)
             vtherm.set_hvac_off_reason(HVAC_OFF_REASON_CENTRAL_MODE)
+            vtherm.set_hvac_mode_reason(HVAC_OFF_REASON_CENTRAL_MODE)
 
         elif vtherm.safety_manager.is_safety_detected and (vtherm.is_over_climate or vtherm.safety_manager.safety_default_on_percent <= 0.0):
             self._current_state.set_hvac_mode(VThermHvacMode_OFF)
             vtherm.set_hvac_off_reason(HVAC_OFF_REASON_SAFETY)
+            vtherm.set_hvac_mode_reason(HVAC_OFF_REASON_SAFETY)
 
         # then check if window is open
         elif vtherm.window_manager.is_window_detected and self._requested_state.hvac_mode != VThermHvacMode_OFF:
+            vtherm.set_hvac_mode_reason(HVAC_OFF_REASON_WINDOW_DETECTION)
             if vtherm.window_manager.window_action == CONF_WINDOW_FAN_ONLY and VThermHvacMode_FAN_ONLY in vtherm.vtherm_hvac_modes:
                 self._current_state.set_hvac_mode(VThermHvacMode_FAN_ONLY)
             elif vtherm.window_manager.window_action == CONF_WINDOW_TURN_OFF or (
@@ -128,10 +132,17 @@ class StateManager:
                 vtherm.set_hvac_off_reason(HVAC_OFF_REASON_WINDOW_DETECTION)
 
         elif vtherm.auto_start_stop_manager and vtherm.auto_start_stop_manager.is_auto_stop_detected and self._requested_state.hvac_mode != VThermHvacMode_OFF:
-            self._current_state.set_hvac_mode(VThermHvacMode_OFF)
-            vtherm.set_hvac_off_reason(HVAC_OFF_REASON_AUTO_START_STOP)
+            stop_mode = vtherm.auto_start_stop_manager.stop_mode
+            if stop_mode != VThermHvacMode_OFF and stop_mode in vtherm.vtherm_hvac_modes:
+                self._current_state.set_hvac_mode(stop_mode)
+                vtherm.set_hvac_mode_reason(AUTO_START_STOP_HVAC_MODE_REASONS.get(str(stop_mode), HVAC_OFF_REASON_AUTO_START_STOP))
+            else:
+                self._current_state.set_hvac_mode(VThermHvacMode_OFF)
+                vtherm.set_hvac_off_reason(HVAC_OFF_REASON_AUTO_START_STOP)
+                vtherm.set_hvac_mode_reason(HVAC_OFF_REASON_AUTO_START_STOP)
 
         elif vtherm.last_central_mode == CENTRAL_MODE_COOL_ONLY and self._requested_state.hvac_mode != VThermHvacMode_OFF:
+            vtherm.set_hvac_mode_reason(HVAC_OFF_REASON_CENTRAL_MODE)
             if VThermHvacMode_COOL in vtherm.vtherm_hvac_modes:
                 self._current_state.set_hvac_mode(VThermHvacMode_COOL)
             else:
@@ -139,6 +150,7 @@ class StateManager:
                 self._current_state.set_hvac_mode(VThermHvacMode_OFF)
 
         elif vtherm.last_central_mode == CENTRAL_MODE_HEAT_ONLY and self._requested_state.hvac_mode != VThermHvacMode_OFF:
+            vtherm.set_hvac_mode_reason(HVAC_OFF_REASON_CENTRAL_MODE)
             if VThermHvacMode_HEAT in vtherm.vtherm_hvac_modes:
                 self._current_state.set_hvac_mode(VThermHvacMode_HEAT)
             else:
@@ -146,7 +158,9 @@ class StateManager:
                 self._current_state.set_hvac_mode(VThermHvacMode_OFF)
 
         elif vtherm.last_central_mode == CENTRAL_MODE_FROST_PROTECTION and self._requested_state.hvac_mode != VThermHvacMode_OFF:
-            if VThermPreset.FROST not in vtherm.vtherm_preset_modes or VThermHvacMode_HEAT not in vtherm.vtherm_hvac_modes:
+            vtherm.set_hvac_mode_reason(HVAC_OFF_REASON_CENTRAL_MODE)
+            preset_modes = vtherm.vtherm_preset_modes
+            if preset_modes is None or VThermPreset.FROST not in preset_modes or VThermHvacMode_HEAT not in vtherm.vtherm_hvac_modes:
                 self._current_state.set_hvac_mode(VThermHvacMode_OFF)
                 vtherm.set_hvac_off_reason(HVAC_OFF_REASON_CENTRAL_MODE)
             elif vtherm.vtherm_hvac_mode != VThermHvacMode_HEAT and VThermHvacMode_HEAT in vtherm.vtherm_hvac_modes:
@@ -156,7 +170,11 @@ class StateManager:
         else:
             if self._current_state.hvac_mode == VThermHvacMode_OFF and self._requested_state.hvac_mode == VThermHvacMode_OFF:
                 _LOGGER.info("%s - already in OFF. Change the reason to MANUAL", vtherm)
-                vtherm.set_hvac_off_reason(HVAC_OFF_REASON_MANUAL if not vtherm.is_sleeping else HVAC_OFF_REASON_SLEEP_MODE)
+                reason = HVAC_OFF_REASON_MANUAL if not vtherm.is_sleeping else HVAC_OFF_REASON_SLEEP_MODE
+                vtherm.set_hvac_off_reason(reason)
+                vtherm.set_hvac_mode_reason(reason)
+            else:
+                vtherm.set_hvac_mode_reason(None)
 
             self._current_state.set_hvac_mode(self._requested_state.hvac_mode)
 
@@ -165,6 +183,7 @@ class StateManager:
             vtherm.set_hvac_off_reason(None)
         elif self._current_state.hvac_mode == VThermHvacMode_SLEEP:
             vtherm.set_hvac_off_reason(HVAC_OFF_REASON_SLEEP_MODE)
+            vtherm.set_hvac_mode_reason(HVAC_OFF_REASON_SLEEP_MODE)
 
         return self._current_state.is_hvac_mode_changed
 
@@ -196,7 +215,8 @@ class StateManager:
             self._current_state.set_preset(VThermPreset.SAFETY)
 
         elif vtherm.last_central_mode == CENTRAL_MODE_FROST_PROTECTION:
-            if VThermPreset.FROST in vtherm.vtherm_preset_modes and vtherm.vtherm_hvac_mode == VThermHvacMode_HEAT:
+            preset_modes = vtherm.vtherm_preset_modes
+            if preset_modes is not None and VThermPreset.FROST in preset_modes and vtherm.vtherm_hvac_mode == VThermHvacMode_HEAT:
                 self._current_state.set_preset(VThermPreset.FROST)
                 vtherm.set_temperature_reason(MSG_TARGET_TEMP_CENTRAL_MODE)
 
@@ -232,6 +252,14 @@ class StateManager:
 
         updated = False
         window_action = vtherm.window_manager.window_action
+
+        # Handle window action correction for COOL mode (Issue #1987)
+        if vtherm.vtherm_hvac_mode == VThermHvacMode_COOL and window_action == CONF_WINDOW_FROST_TEMP:
+            _LOGGER.debug(
+                "%s - HVAC mode is COOL and window action is Frost, falling back to Eco",
+                vtherm,
+            )
+            window_action = CONF_WINDOW_ECO_TEMP
 
         # note that window_manager.is_window_detected is False if bypass is on (so no need to test it here)
         if vtherm.window_manager.is_window_detected:

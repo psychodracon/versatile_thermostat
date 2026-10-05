@@ -1,6 +1,8 @@
 # pylint: disable=unused-argument, line-too-long, too-many-lines
 """ Test the Versatile Thermostat config flow """
 
+from typing import Any, cast
+
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import SOURCE_USER, ConfigEntry
@@ -21,6 +23,119 @@ async def test_show_form(hass: HomeAssistant, init_vtherm_api) -> None:
 
     assert result["type"] == FlowResultType.FORM
     assert result["step_id"] == SOURCE_USER
+
+
+@pytest.mark.parametrize(
+    "power_unit",
+    [POWER_UNIT_WATT, POWER_UNIT_KILO_WATT],
+)
+async def test_config_flow_main_power_unit_options_and_acceptance(
+    hass: HomeAssistant,
+    init_vtherm_api,
+    skip_hass_states_get,
+    power_unit,
+) -> None:
+    """The main form exposes and accepts each VTherm power unit option."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_USER},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_THERMOSTAT_TYPE: CONF_THERMOSTAT_SWITCH},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={"next_step_id": "main"},
+    )
+
+    form_result = cast(dict[str, Any], result)
+    assert form_result["type"] == FlowResultType.FORM
+    assert form_result["data_schema"].schema[CONF_POWER_UNIT].config["options"] == CONF_POWER_UNITS
+    assert (
+        form_result["data_schema"](
+            {
+                CONF_NAME: "Power unit test",
+                CONF_TEMP_SENSOR: "sensor.temperature",
+                CONF_CYCLE_MIN: 5,
+            }
+        )[CONF_POWER_UNIT]
+        == POWER_UNIT_WATT
+    )
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_NAME: "Power unit test",
+            CONF_TEMP_SENSOR: "sensor.temperature",
+            CONF_CYCLE_MIN: 5,
+            CONF_DEVICE_POWER: 2.0,
+            CONF_POWER_UNIT: power_unit,
+            CONF_USE_MAIN_CENTRAL_CONFIG: False,
+        },
+    )
+    assert result.get("type") == FlowResultType.FORM
+
+    hass.config_entries.flow.async_abort(result["flow_id"])
+
+
+@pytest.mark.parametrize(
+    "power_unit",
+    CONF_CENTRAL_POWER_UNITS,
+)
+async def test_config_flow_central_power_unit_options_and_acceptance(
+    hass: HomeAssistant,
+    init_vtherm_api,
+    skip_hass_states_get,
+    power_unit,
+) -> None:
+    """The central power form exposes and accepts W, kW, and Auto."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_USER},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_THERMOSTAT_TYPE: CONF_THERMOSTAT_CENTRAL_CONFIG},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={"next_step_id": "features"},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={CONF_USE_POWER_FEATURE: True},
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={"next_step_id": "power"},
+    )
+
+    form_result = cast(dict[str, Any], result)
+    assert form_result["type"] == FlowResultType.FORM
+    assert form_result["data_schema"].schema[CONF_POWER_UNIT].config["options"] == CONF_CENTRAL_POWER_UNITS
+    assert (
+        form_result["data_schema"](
+            {
+                CONF_POWER_SENSOR: "sensor.power",
+                CONF_MAX_POWER_SENSOR: "sensor.max_power",
+            }
+        )[CONF_POWER_UNIT]
+        == POWER_UNIT_AUTO
+    )
+
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        user_input={
+            CONF_POWER_SENSOR: "sensor.power",
+            CONF_MAX_POWER_SENSOR: "sensor.max_power",
+            CONF_POWER_UNIT: power_unit,
+            CONF_PRESET_POWER: 13,
+        },
+    )
+    assert result.get("type") == FlowResultType.MENU
+
+    hass.config_entries.flow.async_abort(result["flow_id"])
 
 
 @pytest.mark.parametrize("expected_lingering_tasks", [True])
@@ -336,6 +451,7 @@ async def test_user_config_flow_over_climate(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
     ]
     assert result.get("errors") is None
@@ -408,6 +524,7 @@ async def test_user_config_flow_over_climate(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
         # "finalize",  # because we need Advanced default parameters
     ]
@@ -456,6 +573,7 @@ async def test_user_config_flow_over_climate(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
         # "finalize", finalize is not present waiting for advanced configuration
     ]
@@ -494,6 +612,7 @@ async def test_user_config_flow_over_climate(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "finalize",  # Now finalize is present
     ]
 
@@ -569,6 +688,7 @@ async def test_user_config_flow_over_climate_auto_start_stop(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
     ]
     assert result.get("errors") is None
@@ -602,6 +722,7 @@ async def test_user_config_flow_over_climate_auto_start_stop(
         "auto_start_stop",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
         # "finalize", finalize is not present waiting for advanced configuration
     ]
@@ -692,6 +813,7 @@ async def test_user_config_flow_over_climate_auto_start_stop(
         "auto_start_stop",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
         # "finalize",  # because we need Advanced default parameters
     ]
@@ -746,6 +868,7 @@ async def test_user_config_flow_over_climate_auto_start_stop(
         "auto_start_stop",
         "advanced",
         "lock",
+        "humidity",
         "finalize",  # Now finalize is present
     ]
 
@@ -824,6 +947,7 @@ async def test_user_config_flow_over_switch_bug_552_tpi(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
     ]
     assert result.get("errors") is None
@@ -875,6 +999,7 @@ async def test_user_config_flow_over_switch_bug_552_tpi(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",  # tpi and presets are not configured and there is no central configuration
     ]
 
@@ -909,6 +1034,7 @@ async def test_user_config_flow_over_switch_bug_552_tpi(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",  # advanced, tpi and presets are not configured and there is no central configuration
     ]
 
@@ -951,6 +1077,7 @@ async def test_user_config_flow_over_switch_bug_552_tpi(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",  # tpi is not configured and there is no central configuration
     ]
 
@@ -1001,6 +1128,7 @@ async def test_user_config_flow_over_switch_bug_552_tpi(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "finalize",  # all is now configured
     ]
 
@@ -1086,6 +1214,7 @@ async def test_user_config_flow_over_climate_valve(
         "presets",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
     ]
     assert result.get("errors") is None
@@ -1162,6 +1291,7 @@ async def test_user_config_flow_over_climate_valve(
         "sync_device_internal_temp",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
         # "finalize",  # because we need Advanced default parameters
     ]
@@ -1251,6 +1381,7 @@ async def test_user_config_flow_over_climate_valve(
         "sync_device_internal_temp",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
         # "finalize", finalize is not present waiting for advanced configuration
     ]
@@ -1270,7 +1401,7 @@ async def test_user_config_flow_over_climate_valve(
             # CONF_OFFSET_CALIBRATION_LIST: ["number.offset_calibration1"],
             CONF_OPENING_DEGREE_LIST: ["number.opening_degree1"],
             CONF_CLOSING_DEGREE_LIST: ["number.closing_degree1"],
-            CONF_MIN_OPENING_DEGREES: "10, 20,0",
+            CONF_MIN_OPENING_DEGREES: "10, 20",
             CONF_MAX_CLOSING_DEGREE: "30",
             CONF_MAX_OPENING_DEGREES: "90",
             CONF_OPENING_THRESHOLD_DEGREE: "5",
@@ -1357,7 +1488,7 @@ async def test_user_config_flow_over_climate_valve(
                 "number.opening_degree2",
             ],
             CONF_CLOSING_DEGREE_LIST: [],
-            CONF_MIN_OPENING_DEGREES: "10, 20,0",
+            CONF_MIN_OPENING_DEGREES: "10, 20",
             CONF_MAX_CLOSING_DEGREE: "30",
             CONF_MAX_OPENING_DEGREES: "90",
             CONF_OPENING_THRESHOLD_DEGREE: "5",
@@ -1376,6 +1507,7 @@ async def test_user_config_flow_over_climate_valve(
         "sync_device_internal_temp",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
         # "finalize", finalize is not present waiting for advanced configuration
     ]
@@ -1417,6 +1549,7 @@ async def test_user_config_flow_over_climate_valve(
         "sync_device_internal_temp",
         "advanced",
         "lock",
+        "humidity",
         "configuration_not_complete",
         # "finalize",  finalize is not present awaiting for sync_device_internal_temp configuration
     ]
@@ -1477,6 +1610,7 @@ async def test_user_config_flow_over_climate_valve(
         "sync_device_internal_temp",
         "advanced",
         "lock",
+        "humidity",
         "finalize",  # This time finalize is present
     ]
 
@@ -1527,7 +1661,7 @@ async def test_user_config_flow_over_climate_valve(
         CONF_PROP_FUNCTION: PROPORTIONAL_FUNCTION_TPI,
         CONF_TPI_COEF_INT: 0.3,
         CONF_TPI_COEF_EXT: 0.1,
-        CONF_MIN_OPENING_DEGREES: "10, 20,0",
+        CONF_MIN_OPENING_DEGREES: "10, 20",
         CONF_MAX_CLOSING_DEGREE: 30,
         CONF_MAX_OPENING_DEGREES: "90",
         CONF_OPENING_THRESHOLD_DEGREE: 5,

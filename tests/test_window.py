@@ -2756,7 +2756,9 @@ async def test_window_and_central_mode_heat_only(hass: HomeAssistant, skip_hass_
     assert entity.window_state is STATE_UNKNOWN
 
     # Find the select entity
-    select_entity = search_entity(hass, "select.central_mode", SELECT_DOMAIN)
+    select_entity = search_entity(
+        hass, "select.central_configuration_central_mode", SELECT_DOMAIN
+    )
 
     assert select_entity
 
@@ -2989,6 +2991,214 @@ async def test_window_no_motion_absence(hass: HomeAssistant, skip_hass_states_is
         assert mock_send_event.call_count == 0
         assert entity.preset_mode == VThermPreset.ACTIVITY
         assert entity.vtherm_hvac_mode is VThermHvacMode_HEAT
+
+    # Clean the entity
+    entity.remove_thermostat()
+
+
+@pytest.mark.parametrize("expected_lingering_tasks", [True])
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_window_action_fan_only_ac_mode_uses_ac_preset_temp(hass: HomeAssistant, skip_hass_states_is_state):
+    """Test issue #1958: when window_action=fan_only on an AC-mode over-climate VTherm
+    running in cool mode, switching to fan_only must still use the AC eco preset
+    temperature (eco_ac_temp), not the heating eco preset temperature (eco_temp).
+
+    Without the fix find_preset_temp() checks `vtherm_hvac_mode == COOL` which is
+    False during the fan_only window period, so it falls back to the heating preset
+    (18.5 °C) instead of the AC preset (25 °C).  This causes the compressor to
+    activate on window-close because the regulation accumulated error is huge.
+    """
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="TheOverClimateMockName",
+        unique_id="uniqueId",
+        data={
+            CONF_NAME: "TheOverClimateMockName",
+            CONF_THERMOSTAT_TYPE: CONF_THERMOSTAT_CLIMATE,
+            CONF_TEMP_SENSOR: "sensor.mock_temp_sensor",
+            CONF_EXTERNAL_TEMP_SENSOR: "sensor.mock_ext_temp_sensor",
+            CONF_CYCLE_MIN: 5,
+            CONF_TEMP_MIN: 7,
+            CONF_TEMP_MAX: 35,
+            # Heating presets (should NOT be used in AC/cool mode)
+            "eco_temp": 18.5,
+            "comfort_temp": 20.5,
+            "boost_temp": 22.5,
+            # AC (cooling) presets (SHOULD be used when requested mode is COOL)
+            "eco_ac_temp": 25.0,
+            "comfort_ac_temp": 23.0,
+            "boost_ac_temp": 21.0,
+            CONF_USE_WINDOW_FEATURE: True,
+            CONF_USE_MOTION_FEATURE: False,
+            CONF_USE_POWER_FEATURE: False,
+            CONF_USE_PRESENCE_FEATURE: False,
+            CONF_UNDERLYING_LIST: ["climate.mock_climate"],
+            CONF_SAFETY_DELAY_MIN: 60,
+            CONF_SAFETY_MIN_ON_PERCENT: 0.3,
+            CONF_WINDOW_SENSOR: "binary_sensor.mock_window_sensor",
+            CONF_WINDOW_DELAY: 1,
+            CONF_WINDOW_ACTION: CONF_WINDOW_FAN_ONLY,
+            CONF_AC_MODE: True,
+        },
+    )
+
+    # The underlying must support FAN_ONLY so that the fan_only action is taken
+    fake_underlying_climate = await create_and_register_mock_climate(
+        hass,
+        "mock_climate",
+        "MockClimateName",
+        {},
+        hvac_modes=[VThermHvacMode_HEAT, VThermHvacMode_COOL, VThermHvacMode_FAN_ONLY],
+    )
+
+    entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.LOADED
+
+    entity: ThermostatOverClimate = search_entity(hass, "climate.theoverclimatemockname", "climate")
+    assert entity
+    assert entity.is_over_climate is True
+    assert entity.window_manager.window_action == CONF_WINDOW_FAN_ONLY
+    assert entity._ac_mode is True
+
+    # 1. Set the thermostat in COOL mode with ECO preset — should use AC eco preset
+    await entity.async_set_hvac_mode(VThermHvacMode_COOL)
+    assert entity.hvac_mode == VThermHvacMode_COOL
+    await entity.async_set_preset_mode(VThermPreset.ECO)
+    assert entity.preset_mode == VThermPreset.ECO
+    # Must be the AC eco temperature, not the heating eco temperature
+    assert entity.target_temperature == 25.0, f"Expected AC eco preset temp 25.0 but got {entity.target_temperature}"
+
+    # 2. Open the window — device switches to FAN_ONLY
+    tz = get_tz(hass)
+    now: datetime = datetime.now(tz=tz)
+
+    with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
+        "homeassistant.helpers.condition.state", return_value=True
+    ), patch("custom_components.versatile_thermostat.underlyings.UnderlyingClimate.set_hvac_mode") as mock_underlying_set_hvac_mode:
+        event_timestamp = now - timedelta(minutes=2)
+        try_window_condition = await send_window_change_event(entity, True, False, event_timestamp)
+        await try_window_condition(None)
+
+        # HVAC mode must have switched to FAN_ONLY
+        assert entity.vtherm_hvac_mode is VThermHvacMode_FAN_ONLY, f"Expected FAN_ONLY hvac mode but got {entity.vtherm_hvac_mode}"
+        assert entity.window_state == STATE_ON
+        assert entity.preset_mode == VThermPreset.ECO
+
+        # THE KEY ASSERTION: target temperature must still be the AC eco preset (25 °C)
+        # Before the fix, find_preset_temp() returns 18.5 (heating eco) because the
+        # current hvac_mode is FAN_ONLY, not COOL, and the FAN_ONLY case is not handled.
+        assert entity.target_temperature == 25.0, (
+            f"BUG #1958: While in fan_only (window open), target temperature should "
+            f"remain at AC eco preset (25.0 °C) but got {entity.target_temperature}. "
+            f"This causes the heating eco preset (18.5 °C) to be used instead, making "
+            f"the compressor activate aggressively when the window closes."
+        )
+
+        mock_underlying_set_hvac_mode.assert_called_with(VThermHvacMode_FAN_ONLY)
+
+    # 3. Close the window — device should return to COOL with the AC eco preset temp
+    with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
+        "homeassistant.helpers.condition.state", return_value=True
+    ), patch("custom_components.versatile_thermostat.underlyings.UnderlyingClimate.set_hvac_mode") as mock_underlying_set_hvac_mode:
+        event_timestamp = now - timedelta(minutes=1)
+        try_function = await send_window_change_event(entity, False, True, event_timestamp, sleep=False)
+        await try_function(None)
+        await hass.async_block_till_done()
+
+        assert entity.window_state == STATE_OFF
+        assert entity.vtherm_hvac_mode is VThermHvacMode_COOL, f"Expected COOL hvac mode after window close but got {entity.vtherm_hvac_mode}"
+        assert entity.preset_mode == VThermPreset.ECO
+        # Target temperature must be the AC eco preset after window close too
+        assert entity.target_temperature == 25.0, f"Expected AC eco preset temp 25.0 after window close but got {entity.target_temperature}"
+
+    # Clean the entity
+    entity.remove_thermostat()
+
+
+@pytest.mark.parametrize("expected_lingering_tasks", [True])
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_window_action_frost_temp_fallback_to_eco_in_cool_mode(hass: HomeAssistant, skip_hass_states_is_state, fake_underlying_switch: MockSwitch):
+    """Test issue #1987: in COOL mode, there is no Frost preset.
+    If the window action is set to CONF_WINDOW_FROST_TEMP, it should fall back as if the action
+    is CONF_WINDOW_ECO_TEMP and use the eco_ac_temp preset temp.
+    """
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="TheOverSwitchMockName",
+        unique_id="uniqueId",
+        data={
+            CONF_NAME: "TheOverSwitchMockName",
+            CONF_THERMOSTAT_TYPE: CONF_THERMOSTAT_SWITCH,
+            CONF_TEMP_SENSOR: "sensor.mock_temp_sensor",
+            CONF_EXTERNAL_TEMP_SENSOR: "sensor.mock_ext_temp_sensor",
+            CONF_CYCLE_MIN: 5,
+            CONF_TEMP_MIN: 15,
+            CONF_TEMP_MAX: 30,
+            "eco_temp": 17,
+            "comfort_temp": 18,
+            "boost_temp": 21,
+            "frost_temp": 10,
+            "eco_ac_temp": 25,
+            "comfort_ac_temp": 23,
+            "boost_ac_temp": 21,
+            CONF_USE_WINDOW_FEATURE: True,
+            CONF_USE_MOTION_FEATURE: False,
+            CONF_USE_POWER_FEATURE: False,
+            CONF_USE_PRESENCE_FEATURE: False,
+            CONF_UNDERLYING_LIST: ["switch.mock_switch"],
+            CONF_PROP_FUNCTION: PROPORTIONAL_FUNCTION_TPI,
+            CONF_TPI_COEF_INT: 0.3,
+            CONF_TPI_COEF_EXT: 0.01,
+            CONF_MINIMAL_ACTIVATION_DELAY: 30,
+            CONF_MINIMAL_DEACTIVATION_DELAY: 0,
+            CONF_SAFETY_DELAY_MIN: 5,
+            CONF_SAFETY_MIN_ON_PERCENT: 0.3,
+            CONF_WINDOW_SENSOR: "binary_sensor.mock_window_sensor",
+            CONF_WINDOW_DELAY: 1,
+            CONF_WINDOW_ACTION: CONF_WINDOW_FROST_TEMP,
+            CONF_AC_MODE: True,
+        },
+    )
+
+    entity: BaseThermostat = await create_thermostat(hass, entry, "climate.theoverswitchmockname")
+    assert entity
+
+    tz = get_tz(hass)
+    now = datetime.now(tz)
+
+    await entity.async_set_hvac_mode(VThermHvacMode_COOL)
+    await entity.async_set_preset_mode(VThermPreset.COMFORT)
+    assert entity.vtherm_hvac_mode is VThermHvacMode_COOL
+    assert entity.preset_mode == VThermPreset.COMFORT
+    # COMFORT in COOL mode is comfort_ac_temp -> 23.0
+    assert entity.target_temperature == 23.0
+
+    # Open the window
+    with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
+        "homeassistant.helpers.condition.state", return_value=True
+    ):
+        event_timestamp = now - timedelta(minutes=2)
+        try_window_condition = await send_window_change_event(entity, True, False, event_timestamp)
+        await try_window_condition(None)
+
+        assert entity.window_state == STATE_ON
+        # Because we are in COOL mode, the target temperature should fall back to ECO (eco_ac_temp) -> 25.0
+        assert entity.target_temperature == 25.0, f"Expected fallback to AC eco preset temp 25.0 but got {entity.target_temperature}"
+
+    # Close the window
+    with patch("custom_components.versatile_thermostat.base_thermostat.BaseThermostat.send_event") as mock_send_event, patch(
+        "homeassistant.helpers.condition.state", return_value=True
+    ):
+        event_timestamp = now - timedelta(minutes=1)
+        try_function = await send_window_change_event(entity, False, True, event_timestamp, sleep=False)
+        await try_function(None)
+        await hass.async_block_till_done()
+
+        assert entity.window_state == STATE_OFF
+        assert entity.target_temperature == 23.0, f"Expected restoration to COMFORT preset temp 23.0 but got {entity.target_temperature}"
 
     # Clean the entity
     entity.remove_thermostat()
